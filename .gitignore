@@ -1,0 +1,7 @@
+.DS_Store
+tmp/
+__pycache__
+*.nc
+*.pkl
+.cdsapirc
+images/

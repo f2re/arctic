@@ -10,8 +10,191 @@ import cartopy.feature as cfeature
 from matplotlib.gridspec import GridSpec
 from detection.algorithms import detect_cyclones_improved
 
+def visualize_detection_methods_effect(cyclones, detection_methods, output_dir, file_prefix=''):
+    """
+    Визуализирует эффект применения различных методов обнаружения циклонов.
+    Создает набор графиков, показывающих распределения параметров обнаруженных циклонов
+    в зависимости от применяемых критериев фильтрации.
+    
+    Параметры:
+    ----------
+    cyclones : list
+        Список обнаруженных циклонов
+    detection_methods : list
+        Список использованных методов обнаружения
+    output_dir : str
+        Директория для сохранения результатов
+    file_prefix : str
+        Префикс для имен файлов
+    """
+    if not cyclones:
+        print("Нет данных для визуализации эффекта методов обнаружения")
+        return
+    
+    # Создаем DataFrame для облегчения работы с данными
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    
+    df = pd.DataFrame(cyclones)
+    
+    # Определяем число графиков на основе доступных данных
+    plot_columns = []
+    if 'pressure' in df.columns:
+        plot_columns.append(('pressure', 'Давление (гПа)', 'lightblue'))
+    if 'depth' in df.columns:
+        plot_columns.append(('depth', 'Глубина (гПа)', 'lightgreen'))
+    if 'gradient' in df.columns and 'gradient' in detection_methods:
+        plot_columns.append(('gradient', 'Градиент давления (гПа/градус)', 'salmon'))
+    if 'max_wind' in df.columns and 'wind_speed' in detection_methods:
+        plot_columns.append(('max_wind', 'Скорость ветра (м/с)', 'gold'))
+    if 'max_vorticity' in df.columns and 'vorticity' in detection_methods:
+        plot_columns.append(('max_vorticity', 'Завихренность (с⁻¹)', 'mediumpurple'))
+    if 'radius' in df.columns:
+        plot_columns.append(('radius', 'Радиус (км)', 'lightcoral'))
+    
+    # Вычисляем количество строк и столбцов для сетки графиков
+    n_plots = len(plot_columns)
+    cols = 2
+    rows = (n_plots + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    else:
+        axes = axes.flatten()
+    
+    # Создаем график для каждого параметра
+    for i, (col, label, color) in enumerate(plot_columns):
+        if i < len(axes):
+            ax = axes[i]
+            
+            # Особая обработка для завихренности (масштабирование для улучшения читаемости)
+            if col == 'max_vorticity':
+                values = df[col] * 1e6  # Преобразуем в 10⁻⁶ с⁻¹
+                xlabel = 'Завихренность (10⁻⁶ с⁻¹)'
+            else:
+                values = df[col]
+                xlabel = label
+            
+            # Создаем гистограмму
+            ax.hist(values, bins=20, color=color, edgecolor='black', alpha=0.7)
+            
+            # Добавляем вертикальную линию для порогового значения, если это применимо
+            if col == 'pressure' and 'pressure_minima' in detection_methods:
+                threshold = next((c['min_pressure_threshold'] for c in df['cyclone_params'].unique() 
+                                 if hasattr(c, 'get') and c.get('min_pressure_threshold')), None)
+                if threshold:
+                    ax.axvline(x=threshold, color='red', linestyle='--', 
+                              label=f'Порог: {threshold} гПа')
+                    ax.legend()
+            
+            elif col == 'depth' and 'pressure_minima' in detection_methods:
+                threshold = next((c['min_depth'] for c in df['cyclone_params'].unique() 
+                                 if hasattr(c, 'get') and c.get('min_depth')), None)
+                if threshold:
+                    ax.axvline(x=threshold, color='red', linestyle='--', 
+                              label=f'Порог: {threshold} гПа')
+                    ax.legend()
+            
+            elif col == 'gradient' and 'gradient' in detection_methods:
+                threshold = next((c['pressure_gradient_threshold'] for c in df['cyclone_params'].unique() 
+                                 if hasattr(c, 'get') and c.get('pressure_gradient_threshold')), None)
+                if threshold:
+                    ax.axvline(x=threshold, color='red', linestyle='--', 
+                              label=f'Порог: {threshold} гПа/градус')
+                    ax.legend()
+            
+            elif col == 'max_wind' and 'wind_speed' in detection_methods:
+                threshold = next((c['min_wind_speed'] for c in df['cyclone_params'].unique() 
+                                 if hasattr(c, 'get') and c.get('min_wind_speed')), None)
+                if threshold:
+                    ax.axvline(x=threshold, color='red', linestyle='--', 
+                              label=f'Порог: {threshold} м/с')
+                    ax.legend()
+            
+            elif col == 'max_vorticity' and 'vorticity' in detection_methods:
+                threshold = next((c['min_vorticity'] for c in df['cyclone_params'].unique() 
+                                 if hasattr(c, 'get') and c.get('min_vorticity')), None)
+                if threshold:
+                    ax.axvline(x=threshold * 1e6, color='red', linestyle='--', 
+                              label=f'Порог: {threshold * 1e6:.1f} · 10⁻⁶ с⁻¹')
+                    ax.legend()
+            
+            ax.set_title(label)
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('Количество циклонов')
+            ax.grid(alpha=0.3)
+    
+    # Скрываем пустые графики
+    for i in range(len(plot_columns), len(axes)):
+        axes[i].set_visible(False)
+    
+    # Добавляем общий заголовок с информацией о методах обнаружения
+    plt.suptitle(f"Распределение параметров циклонов, обнаруженных с использованием методов:\n{', '.join(detection_methods)}", 
+                fontsize=16, y=0.98)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(os.path.join(output_dir, f"{file_prefix}detection_methods_effect.png"), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Создаем круговую диаграмму распределения причин отклонения потенциальных циклонов
+    if 'rejected_centers' in locals() and rejected_centers:
+        # Подсчитываем причины отклонения
+        reasons = {}
+        for center in rejected_centers:
+            reason = center.get("reason", "unknown")
+            if reason in reasons:
+                reasons[reason] += 1
+            else:
+                reasons[reason] = 1
+        
+        # Словарь понятных названий причин
+        reason_labels = {
+            "small_size": "Малый размер области",
+            "high_pressure": "Высокое давление",
+            "shallow_depth": "Недостаточная глубина",
+            "no_closed_contour": "Отсутствие замкнутых изобар",
+            "weak_gradient": "Слабый градиент давления",
+            "low_latitude": "Широта ниже 70°N",
+            "invalid_size": "Размер вне допустимого диапазона",
+            "weak_wind": "Слабый ветер",
+            "weak_vorticity": "Слабая завихренность",
+            "unknown": "Неизвестная причина"
+        }
+        
+        # Создаем круговую диаграмму
+        plt.figure(figsize=(12, 10))
+        
+        # Подготовка данных для диаграммы
+        labels = []
+        sizes = []
+        
+        for reason, count in reasons.items():
+            label = reason_labels.get(reason, reason)
+            labels.append(f"{label} ({count})")
+            sizes.append(count)
+        
+        # Создаем круговую диаграмму
+        plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, 
+              shadow=True, explode=[0.05] * len(sizes))
+        plt.axis('equal')  # Чтобы круг был правильной формы
+        
+        plt.title(f"Причины отклонения потенциальных циклонических систем при использовании методов:\n{', '.join(detection_methods)}")
+        
+        rejection_file = os.path.join(output_dir, f"{file_prefix}rejection_reasons_distribution.png")
+        plt.savefig(rejection_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Диаграмма распределения причин отклонения сохранена: {rejection_file}")
+    
+    print(f"Визуализация эффекта методов обнаружения сохранена в {output_dir}")
+
+
 def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, lat_var, lon_var,
-                                      output_dir, cyclone_params=None, save_diagnostic=True, file_prefix=''):
+                                      output_dir, cyclone_params=None, save_diagnostic=True, file_prefix='',
+                                      detection_methods=None):
     """
     Оптимизированная функция визуализации обнаруженных циклонов с расширенной диагностикой.
     
@@ -19,8 +202,8 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
     1. Поле приземного давления с отмеченными центрами циклонов
     2. Лапласиан давления с указанием порогового значения
     3. Градиент давления с указанием порогового значения
-    4. Скорость ветра (если доступна) с указанием порогового значения
-    5. Относительная завихренность (если доступна) с указанием порогового значения
+    4. Скорость ветра (если доступна и выбрана) с указанием порогового значения
+    5. Относительная завихренность (если доступна и выбрана) с указанием порогового значения
     
     Параметры:
     ----------
@@ -44,6 +227,9 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
         Флаг для сохранения диагностических изображений
     file_prefix : str, default=''
         Префикс для имен файлов
+    detection_methods : list, optional
+        Список методов обнаружения циклонов для визуализации.
+        Если None, визуализируются все доступные методы.
     
     Возвращает:
     -----------
@@ -89,14 +275,14 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
             # Преобразуем в гПа для отображения
             pressure_hpa = pressure / 100.0 if np.max(pressure) > 10000 else pressure
 
-            # Определяем количество панелей на основе доступных данных
+            # Определяем количество панелей на основе доступных данных и выбранных методов
             has_wind_data = diagnostic_data.get("has_wind_data", False)
             has_vorticity_data = diagnostic_data.get("has_vorticity_data", False)
             
             num_panels = 3  # Базовые панели: давление, лапласиан, градиент
-            if has_wind_data:
+            if has_wind_data and (detection_methods is None or 'wind_speed' in detection_methods):
                 num_panels += 1
-            if has_vorticity_data:
+            if has_vorticity_data and (detection_methods is None or 'vorticity' in detection_methods):
                 num_panels += 1
             
             # Создаем многопанельную визуализацию
@@ -221,9 +407,9 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
             cb3 = plt.colorbar(cs3, ax=ax3, orientation='horizontal', pad=0.05, label='Градиент давления (гПа/градус)')
             ax3.set_title(f"Градиент давления (гПа/градус)\nПорог: {gradient_threshold}")
 
-            # 4. Панель скорости ветра (если доступна)
+            # 4. Панель скорости ветра (если доступна и метод выбран)
             panel_idx = 3
-            if has_wind_data:
+            if has_wind_data and (detection_methods is None or 'wind_speed' in detection_methods):
                 ax4 = fig.add_subplot(gs[panel_idx], projection=ccrs.NorthPolarStereo(central_longitude=0))
                 ax4.set_extent([-180, 180, 70, 90], ccrs.PlateCarree())
                 ax4.add_feature(cfeature.COASTLINE)
@@ -268,8 +454,8 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
                 
                 panel_idx += 1
             
-            # 5. Панель завихренности (если доступна)
-            if has_vorticity_data:
+            # 5. Панель завихренности (если доступна и метод выбран)
+            if has_vorticity_data and (detection_methods is None or 'vorticity' in detection_methods):
                 ax5 = fig.add_subplot(gs[panel_idx], projection=ccrs.NorthPolarStereo(central_longitude=0))
                 ax5.set_extent([-180, 180, 70, 90], ccrs.PlateCarree())
                 ax5.add_feature(cfeature.COASTLINE)
@@ -317,9 +503,12 @@ def visualize_cyclones_with_diagnostics(ds, time_idx, time_dim, pressure_var, la
                                      label='Относительная завихренность (с⁻¹)')
                     ax5.set_title(f"Относительная завихренность\nПорог: {vorticity_threshold:.1e} с⁻¹")
 
-            # Общий заголовок
-            plt.suptitle(f"Анализ циклонов в Арктике - {time_display}\nОбнаружено циклонов: {len(cyclone_centers)}",
-                        fontsize=16, y=0.98)
+            # Общий заголовок с указанием используемых методов обнаружения
+            title_str = f"Анализ циклонов в Арктике - {time_display}\nОбнаружено циклонов: {len(cyclone_centers)}"
+            if detection_methods:
+                methods_str = ", ".join(detection_methods)
+                title_str += f"\nИспользуемые методы: {methods_str}"
+            plt.suptitle(title_str, fontsize=16, y=0.98)
 
             grid_info = diagnostic_data["grid_info"]
 

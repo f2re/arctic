@@ -61,6 +61,11 @@ POLAR_LOW_PARAMS = {
 }
 
 # Пути для сохранения файлов
-DEFAULT_DATA_DIR = '/content/drive/MyDrive/arctic/data'
-DEFAULT_IMAGE_DIR = '/content/drive/MyDrive/arctic/images'
-DEFAULT_CHECKPOINT_DIR = '/content/drive/MyDrive/arctic/checkpoints'
+# DEFAULT_DATA_DIR = '/content/drive/MyDrive/arctic/data'
+# DEFAULT_IMAGE_DIR = '/content/drive/MyDrive/arctic/images'
+# DEFAULT_CHECKPOINT_DIR = '/content/drive/MyDrive/arctic/checkpoints'
+
+DEFAULT_DATA_DIR = '~/arctic_git/data'
+DEFAULT_IMAGE_DIR = '~/arctic_git/images'
+DEFAULT_CHECKPOINT_DIR = '~/arctic_git/checkpoints'
+DEFAULT_CRITERIA_DIR = '~/arctic_git/criteria_images'

@@ -144,234 +144,188 @@ def setup_cdsapirc(arctic_dir):
                 print(f"Копия файла .cdsapirc сохранена в Google Drive: {drive_cdsapirc_path}")
 
 
-def download_era5_data_extended(start_date, end_date, data_dir, output_file='era5_arctic_data.nc'):
+def download_era5_data_extended(start_date, end_date, data_dir, output_file='era5_arctic_data.nc', 
+                              region=None, era5_data_info=None, detection_methods=None, analysis_level='basic'):
     """
-    Загрузка расширенного набора данных ERA5 для арктического региона.
+    Загрузка расширенного набора данных ERA5 для арктического региона с поддержкой
+    раздельной загрузки однослойных и многослойных переменных.
     
     Параметры:
     ----------
-    start_date, end_date : str
-        Начальная и конечная даты в формате 'YYYY-MM-DD'
+    start_date : str
+        Начальная дата в формате 'YYYY-MM-DD'
+    end_date : str
+        Конечная дата в формате 'YYYY-MM-DD'
     data_dir : str
         Директория для сохранения данных
-    output_file : str
+    output_file : str, optional
         Имя выходного файла
-
+    region : list, optional
+        Регион в формате [север, запад, юг, восток]
+    era5_data_info : dict, optional
+        Информация о необходимых данных ERA5 (результат функции determine_required_era5_variables).
+        Если None, информация будет определена автоматически на основе detection_methods.
+    detection_methods : list, optional
+        Список методов обнаружения циклонов. Используется, если era5_data_info не задан.
+    analysis_level : str, optional
+        Уровень детализации анализа. Используется, если era5_data_info не задан.
+        
     Возвращает:
     -----------
     str
         Путь к загруженному файлу
     """
-    # Реализация без изменений из оригинального файла
-    import netCDF4
-    import cfgrib
-    
-    # Проверка наличия cdsapi
     import cdsapi
-
-    # Полный путь для сохранения файла
     import os
-    output_path = os.path.join(data_dir, output_file)
-
-    # Проверяем существование файла перед загрузкой
-    if os.path.exists(output_path):
-        print(f"Файл данных уже существует: {output_path}")
-        use_existing = input("Использовать существующий файл? (y/n): ")
-        if use_existing.lower() == 'y':
-            print(f"Используется существующий файл: {output_path}")
-            return output_path
-
-    print(f"Загрузка данных ERA5 для периода {start_date} - {end_date}...")
-    print(f"Файл будет сохранен в: {output_path}")
-
-    # Преобразуем строки дат в объекты datetime
-    from datetime import datetime, timedelta
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-
-    # Формируем списки для параметров запроса
-    years = []
-    months = []
-    days = []
-
-    # Генерируем список дат в указанном диапазоне
-    current_dt = start_dt
-    while current_dt <= end_dt:
-        years.append(str(current_dt.year))
-        months.append(f"{current_dt.month:02d}")
-        days.append(f"{current_dt.day:02d}")
-        current_dt += timedelta(days=1)
-
-    # Удаляем дубликаты, сохраняя порядок
-    years = list(dict.fromkeys(years))
-    months = list(dict.fromkeys(months))
-    days = list(dict.fromkeys(days))
-
+    
+    # Установка региона по умолчанию, если не указан
+    if region is None:
+        region = [90, -180, 65, 180]  # [север, запад, юг, восток]
+    
+    # Если информация о данных не предоставлена, определяем её на основе методов обнаружения
+    if era5_data_info is None:
+        if detection_methods is None:
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient']
+        era5_data_info = determine_required_era5_variables(detection_methods, analysis_level)
+    
+    # Получаем списки переменных и уровней
+    single_level_vars = era5_data_info['single_level_vars']
+    pressure_level_vars = era5_data_info['pressure_level_vars']
+    pressure_levels = era5_data_info['pressure_levels']
+    
+    print(f"Запрос данных ERA5 для периода {start_date} - {end_date}")
+    print(f"Регион: {region}")
+    print(f"Необходимые переменные:")
+    print(f"  Однослойные: {', '.join(single_level_vars)}")
+    if pressure_level_vars:
+        print(f"  Многослойные: {', '.join(pressure_level_vars)}")
+        print(f"  Уровни давления: {', '.join(pressure_levels)}")
+    
+    # Создаем директорию, если она не существует
+    os.makedirs(data_dir, exist_ok=True)
+    
+    # Полный путь к файлу
+    file_path = os.path.join(data_dir, output_file)
+    
+    # Проверяем, существует ли уже файл
+    if os.path.exists(file_path):
+        print(f"Файл {file_path} уже существует, используем его")
+        return file_path
+    
+    # Создаем клиент CDS API
     try:
-        # Создаем клиент CDS API
-        client = cdsapi.Client()
-        
-        # Временные файлы для разных наборов данных
-        surface_file = os.path.join(data_dir, "temp_surface.nc")
-        pressure_file = os.path.join(data_dir, "temp_pressure.nc")
-        vorticity_file = os.path.join(data_dir, "temp_vorticity.nc")
-        # Запрос для приземных данных с корректными именами переменных
-        print("\nЗагрузка приземных данных...")
-        client.retrieve(
-            'reanalysis-era5-single-levels',
-            {
-                'product_type': 'reanalysis',
-                'variable': [
-                    'mean_sea_level_pressure',  # Приземное давление
-                    '10m_u_component_of_wind',  # U-компонента ветра на 10м
-                    '10m_v_component_of_wind',  # V-компонента ветра на 10м
-                ],
-                'year': years,
-                'month': months,
-                'day': days,
-                'time': ['00:00', '12:00'],
-                'area': [90, -180, 70, 180],    # Северный полярный регион выше 70°N
-                'format': 'netcdf',             # Формат выходных данных
-            },
-            surface_file
-        )
-        print(f"Приземные данные успешно загружены в {surface_file}")
-        
-        # Запрос для данных на уровне давления 700 гПа
-        print("\nЗагрузка данных на уровне давления...")
-        client.retrieve(
-            'reanalysis-era5-pressure-levels',
-            {
-                'product_type': 'reanalysis',
-                'variable': [
-                    'temperature',      # Температура
-                    'relative_humidity' # Относительная влажность
-                ],
-                'pressure_level': '700',
-                'year': years,
-                'month': months,
-                'day': days,
-                'time': ['00:00', '12:00'],
-                'area': [90, -180, 70, 180],
-                'format': 'netcdf',
-            },
-            pressure_file
-        )
-        print(f"Данные на уровне давления успешно загружены в {pressure_file}")
-        
-        # Отдельный запрос для завихренности на уровне 850 гПа
-        client.retrieve(
-            'reanalysis-era5-pressure-levels',
-            {
-                'product_type': 'reanalysis',
-                'variable': [
-                    'vo',   # Завихренность
-                ],
-                'pressure_level': '850',
-                'year': years,
-                'month': months,
-                'day': days,
-                'time': ['00:00', '12:00'],
-                'area': [90, -180, 70, 180],
-                'format': 'netcdf',
-            },
-            vorticity_file
-        )
-        print(f"Данные на уровне 850 гПа успешно загружены в {vorticity_file}")
-        # Объединяем наборы данных с использованием xarray
-        print("\nОбъединение наборов данных...")
-        import xarray as xr
-        
-        # Явно указываем движок netCDF4 при открытии файлов
-        ds_surface = xr.open_dataset(surface_file, engine='netcdf4')
-        ds_pressure = xr.open_dataset(pressure_file, engine='netcdf4')
-        ds_vorticity = xr.open_dataset(vorticity_file, engine='netcdf4')
-        # Обеспечиваем совместимость координат
-        ds_pressure = ds_pressure.assign_coords(
-            longitude=ds_pressure.longitude,
-            latitude=ds_pressure.latitude
-        )
-        ds_vorticity = ds_vorticity.assign_coords(    
-            longitude=ds_vorticity.longitude,
-            latitude=ds_vorticity.latitude
-        )
-        # Объединяем в один набор данных и сохраняем
-        ds_combined = xr.merge([ds_surface, ds_pressure, ds_vorticity])
-        ds_combined.to_netcdf(output_path)
-        
-        # Вычисляем скорость ветра из компонент U и V
-        if '10m_u_component_of_wind' in ds_combined and '10m_v_component_of_wind' in ds_combined:
-            print("Вычисление скорости ветра из компонент U и V...")
-            import numpy as np
-            
-            # Создаем новый датасет для сохранения
-            ds_with_wind = ds_combined.copy()
-            
-            # Вычисляем скорость ветра
-            u10 = ds_combined['10m_u_component_of_wind']
-            v10 = ds_combined['10m_v_component_of_wind']
-            wind_speed = np.sqrt(u10**2 + v10**2)
-            
-            # Добавляем новую переменную в датасет
-            ds_with_wind['10m_wind_speed'] = wind_speed
-            
-            # Сохраняем обновленный датасет
-            ds_with_wind.to_netcdf(output_path)
-            print(f"Добавлена вычисленная переменная: скорость ветра")
-            
-            # Используем обновленный датасет для дальнейшей работы
-            ds_combined = ds_with_wind
-        
-        # Закрываем датасеты
-        ds_surface.close()
-        ds_pressure.close()
-        ds_vorticity.close()
-        # Удаляем временные файлы
-        try:
-            os.remove(surface_file)
-            os.remove(pressure_file)
-            os.remove(vorticity_file)
-            print("Временные файлы удалены")
-        except Exception as e:
-            print(f"Предупреждение: не удалось удалить временные файлы: {e}")
-        
-        print(f"\nДанные успешно загружены и объединены в файл: {output_path}")
-        return output_path
-
+        c = cdsapi.Client()
     except Exception as e:
-        print(f"\nОшибка при загрузке данных: {e}")
-        
-        # Предлагаем альтернативные действия
-        print("\nАльтернативные действия:")
-        print("1. Проверьте правильность API ключа в файле .cdsapirc")
-        print("2. Проверьте соединение с интернетом")
-        print("3. Возможно, сервер CDS перегружен, попробуйте позже")
-        print("4. Используйте веб-интерфейс CDS для загрузки данных")
-        
-        # Предлагаем использовать локальный файл
-        use_local = input("\nИспользовать существующий файл данных на Google Drive? (y/n): ")
-        if use_local.lower() == 'y':
-            # Показываем список nc-файлов в папке data
-            nc_files = [f for f in os.listdir(data_dir) if f.endswith('.nc')]
-
-            if nc_files:
-                print("\nДоступные файлы .nc в директории данных:")
-                for i, file in enumerate(nc_files):
-                    print(f"{i+1}. {file}")
-
-                choice = input("\nВыберите номер файла (или нажмите Enter для ввода другого пути): ")
-
-                if choice.isdigit() and 1 <= int(choice) <= len(nc_files):
-                    file_path = os.path.join(data_dir, nc_files[int(choice)-1])
-                else:
-                    file_path = input("Введите полный путь к файлу с данными ERA5: ")
-            else:
-                print("В директории данных не найдены файлы .nc")
-                file_path = input("Введите полный путь к файлу с данными ERA5: ")
-
-            if os.path.exists(file_path):
-                return file_path
+        print(f"Ошибка при создании клиента CDS API: {e}")
+        print("Убедитесь, что файл .cdsapirc настроен корректно")
         return None
+    
+    # Создаем пути для временных файлов
+    single_level_file = os.path.join(data_dir, f"temp_sl_{os.path.basename(file_path)}")
+    pressure_level_file = os.path.join(data_dir, f"temp_pl_{os.path.basename(file_path)}")
+    
+    # Флаги для отслеживания загрузки
+    single_level_downloaded = False
+    pressure_level_downloaded = False
+    
+    # Загружаем однослойные переменные, если они есть
+    if single_level_vars:
+        try:
+            print(f"Загрузка однослойных переменных: {', '.join(single_level_vars)}")
+            request_params = {
+                'product_type': 'reanalysis',
+                'format': 'netcdf',
+                'variable': single_level_vars,
+                'year': [start_date[:4], end_date[:4]],
+                'month': [start_date[5:7], end_date[5:7]],
+                'day': list(range(1, 32)),
+                'time': ['00:00', '06:00', '12:00', '18:00'],
+                'area': region,  # [север, запад, юг, восток]
+            }
+            
+            c.retrieve('reanalysis-era5-single-levels', request_params, single_level_file)
+            single_level_downloaded = True
+            print(f"Однослойные переменные успешно загружены в {single_level_file}")
+        except Exception as e:
+            print(f"Ошибка при загрузке однослойных переменных: {e}")
+    
+    # Загружаем многослойные переменные, если они есть
+    if pressure_level_vars and pressure_levels:
+        try:
+            print(f"Загрузка многослойных переменных: {', '.join(pressure_level_vars)} на уровнях {', '.join(pressure_levels)}")
+            request_params = {
+                'product_type': 'reanalysis',
+                'format': 'netcdf',
+                'variable': pressure_level_vars,
+                'pressure_level': pressure_levels,
+                'year': [start_date[:4], end_date[:4]],
+                'month': [start_date[5:7], end_date[5:7]],
+                'day': list(range(1, 32)),
+                'time': ['00:00', '06:00', '12:00', '18:00'],
+                'area': region,  # [север, запад, юг, восток]
+            }
+            
+            c.retrieve('reanalysis-era5-pressure-levels', request_params, pressure_level_file)
+            pressure_level_downloaded = True
+            print(f"Многослойные переменные успешно загружены в {pressure_level_file}")
+        except Exception as e:
+            print(f"Ошибка при загрузке многослойных переменных: {e}")
+    
+    # Объединяем файлы, если необходимо
+    if single_level_downloaded and pressure_level_downloaded:
+        try:
+            import xarray as xr
+            
+            print(f"Объединение файлов однослойных и многослойных переменных...")
+            ds_sl = xr.open_dataset(single_level_file)
+            ds_pl = xr.open_dataset(pressure_level_file)
+            
+            # Объединяем данные
+            ds_combined = xr.merge([ds_sl, ds_pl])
+            
+            # Сохраняем объединенный датасет
+            ds_combined.to_netcdf(file_path)
+            
+            # Закрываем датасеты
+            ds_sl.close()
+            ds_pl.close()
+            
+            # Удаляем временные файлы
+            import os
+            os.remove(single_level_file)
+            os.remove(pressure_level_file)
+            
+            print(f"Данные успешно объединены и сохранены в {file_path}")
+        except Exception as e:
+            print(f"Ошибка при объединении файлов: {e}")
+            # Если не удалось объединить, используем один из загруженных файлов
+            if single_level_downloaded:
+                import shutil
+                shutil.copy(single_level_file, file_path)
+                print(f"Используем только файл с однослойными переменными: {file_path}")
+                os.remove(single_level_file)
+                if pressure_level_downloaded:
+                    os.remove(pressure_level_file)
+            elif pressure_level_downloaded:
+                import shutil
+                shutil.copy(pressure_level_file, file_path)
+                print(f"Используем только файл с многослойными переменными: {file_path}")
+                os.remove(pressure_level_file)
+    elif single_level_downloaded:
+        import shutil
+        shutil.move(single_level_file, file_path)
+        print(f"Используем только однослойные переменные: {file_path}")
+    elif pressure_level_downloaded:
+        import shutil
+        shutil.move(pressure_level_file, file_path)
+        print(f"Используем только многослойные переменные: {file_path}")
+    else:
+        print(f"Ошибка: не удалось загрузить данные ERA5")
+        return None
+    
+    print(f"Данные успешно загружены и сохранены в {file_path}")
+    return file_path
+    
 
 def inspect_netcdf(file_path):
     """
@@ -499,7 +453,9 @@ def inspect_netcdf(file_path):
         "coordinates": list(ds.coords),
         "global_attrs": {k: str(v) for k, v in ds.attrs.items()}
     }
-
+    print("==============================")
+    print(list(ds.variables))
+    print("==============================")
     # Проверка наличия временного измерения
     time_dims = [dim for dim in info["dimensions"] if "time" in dim.lower()]
     if time_dims:

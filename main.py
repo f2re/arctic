@@ -20,28 +20,61 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорт модулей
-from google.colab import drive
+
 from config import *
 from data.download import setup_cdsapirc, download_era5_data_extended, inspect_netcdf
 from data.preprocessing import analyze_grid_scale, adapt_detection_params
 from detection.algorithms import detect_cyclones_improved
 from detection.thermal import classify_cyclones
-from visualization.plots import visualize_cyclones_with_diagnostics, create_cyclone_statistics
+from visualization.plots import visualize_cyclones_with_diagnostics, create_cyclone_statistics, visualize_detection_methods_effect
 from visualization.diagnostics import visualize_detection_criteria
 from analysis.tracking import track_cyclones
 from analysis.metrics import haversine_distance
 from detection.parameters import get_cyclone_params
 
+
+def is_running_in_colab():
+    """
+    Проверяет, запущен ли код в Google Colab.
+    
+    Возвращает:
+    -----------
+    bool
+        True, если код выполняется в Google Colab, False - если на локальном ПК
+    """
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
 def mount_drive_and_setup():
     """
-    Монтирование Google Drive и настройка рабочих каталогов.
+    Монтирование Google Drive (если в Colab) или настройка локальных каталогов и создание
+    необходимой структуры директорий для хранения данных.
     """
-    print("Монтирование Google Drive...")
-    drive.mount('/content/drive')
-
-    # Создаем базовый каталог для хранения данных
-    arctic_dir = '/content/drive/MyDrive/arctic'
-    data_dir = os.path.join(arctic_dir, 'data')
+    import os
+    from pathlib import Path
+    
+    is_colab = is_running_in_colab()
+    print(f"Определено окружение: {'Google Colab' if is_colab else 'Локальный компьютер'}")
+    
+    if is_colab:
+        # Настройка для Google Colab
+        from google.colab import drive
+        print("Монтирование Google Drive...")
+        drive.mount('/content/drive')
+        
+        # Создаем базовый каталог для хранения данных
+        arctic_dir = '/content/drive/MyDrive/arctic'
+    else:
+        # Настройка для локального ПК
+        # Используем директорию в домашнем каталоге пользователя
+        arctic_dir = os.path.join(os.path.expanduser('~'), 'arctic_git')
+        print(f"Использование локальной директории: {arctic_dir}")
+    
+    # Общая настройка структуры каталогов для обеих сред
+    data_dir = os.path.join(arctic_dir, 'data', 'nc')
     image_dir = os.path.join(arctic_dir, 'images')
     checkpoint_dir = os.path.join(arctic_dir, 'checkpoints')
     model_dir = os.path.join(arctic_dir, 'models')
@@ -53,7 +86,9 @@ def mount_drive_and_setup():
 
     return arctic_dir, data_dir, image_dir, checkpoint_dir, model_dir
 
-def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=True, save_diagnostic=False, use_daily_step=True, cyclone_type='mesoscale'):
+def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=True, 
+                  save_diagnostic=False, use_daily_step=True, cyclone_type='mesoscale',
+                  detection_methods=None):
     """
     Оптимизированная обработка данных ERA5 и обнаружение циклонов с ежедневным шагом по времени.
     Включает отслеживание циклонов во времени и проверку дополнительных критериев для мезомасштабных циклонов.
@@ -76,6 +111,10 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
         Использовать ежедневный шаг (вместо обработки каждого временного шага)
     cyclone_type : str
         Тип циклонов для обнаружения: 'synoptic', 'mesoscale' или 'polar_low'
+    detection_methods : list, optional
+        Список методов обнаружения циклонов для использования. 
+        Возможные значения: 'laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed'.
+        По умолчанию используются все доступные методы для выбранного типа циклонов.
 
     Возвращает:
     -----------
@@ -83,6 +122,22 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
         Список обнаруженных циклонов
     """
     print(f"Обработка данных из файла: {file_path}")
+
+    # Установка методов обнаружения по умолчанию, если не указаны
+    if detection_methods is None:
+        # Методы по умолчанию для каждого типа циклонов
+        if cyclone_type == 'synoptic':
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient']
+        elif cyclone_type == 'mesoscale':
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed']
+        else:  # polar_low
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed']
+    
+    print(f"Используемые методы обнаружения: {', '.join(detection_methods)}")
+    
+    # Автоматическое определение необходимых параметров реанализа ERA5
+    required_variables = determine_required_era5_variables(detection_methods)
+    print(f"Необходимые переменные реанализа ERA5: {', '.join(required_variables)}")
 
     # Загружаем параметры алгоритма - используем MESOSCALE_CYCLONE_PARAMS для мезовихрей
     cyclone_params = MESOSCALE_CYCLONE_PARAMS if 'MESOSCALE_CYCLONE_PARAMS' in globals() else OPTIMIZED_CYCLONE_PARAMS
@@ -221,7 +276,6 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
 
         print(f"\nОбработка временного шага {time_idx+1}/{time_steps}: {time_str}")
         
-
         # Добавьте этот код после загрузки датасета, но до цикла по временным шагам
         if 'u10' in ds.variables and 'v10' in ds.variables:
             print(f"Найдены компоненты ветра: u10, v10. Вычисляю скорость ветра для всего датасета...")
@@ -298,9 +352,12 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
             print("ВНИМАНИЕ: Переменная завихренности не найдена. Критерий завихренности не будет применяться.")
 
         # Первый шаг: обнаружение циклонов
+        # При вызове функции обнаружения циклонов передаем выбранные методы
         pressure, laplacian, cyclone_centers, cyclones_found, cyclone_mask, diagnostic_data = detect_cyclones_improved(
             ds, time_idx, time_dim, pressure_var, lat_var, lon_var, 
-            cyclone_params=cyclone_params
+            cyclone_params=cyclone_params,
+            cyclone_type=cyclone_type,
+            detection_methods=detection_methods
         )
         
         # Второй шаг: дополнительные критерии для мезомасштабных циклонов
@@ -402,11 +459,13 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
                     print(f"Ошибка при проверке завихренности: {e}")
         
         # Третий шаг: Визуализация результатов
+        # При вызове функции визуализации также передаем выбранные методы
         if cyclones_found:
             visualize_cyclones_with_diagnostics(
                 ds, time_idx, time_dim, pressure_var, lat_var, lon_var,
                 output_dir, cyclone_params=cyclone_params,
-                save_diagnostic=save_diagnostic, file_prefix="meso_"
+                save_diagnostic=save_diagnostic, file_prefix="meso_",
+                detection_methods=detection_methods
             )
         
         # Четвертый шаг: Отслеживание циклонов во времени
@@ -578,6 +637,128 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
 
     return all_cyclones
 
+def determine_required_era5_variables(detection_methods, analysis_level='basic'):
+    """
+    Определяет необходимые переменные реанализа ERA5 на основе выбранных методов обнаружения
+    и уровня детализации анализа.
+    
+    Параметры:
+    ----------
+    detection_methods : list
+        Список методов обнаружения циклонов
+    analysis_level : str, optional
+        Уровень детализации анализа: 'basic', 'extended', 'comprehensive'
+        
+    Возвращает:
+    -----------
+    dict
+        Информация о необходимых данных ERA5: 
+        {
+            'variables': список всех переменных,
+            'single_level_vars': список однослойных переменных,
+            'pressure_level_vars': список многослойных переменных,
+            'pressure_levels': список уровней давления,
+            'variables_by_level': словарь с переменными для каждого уровня
+        }
+    """
+    # Инициализируем структуры данных
+    single_level_vars = ['msl']  # Базовые переменные (приземное давление всегда нужно)
+    pressure_level_vars = {}     # Словарь {уровень: [переменные]}
+    
+    # Добавляем переменные в зависимости от выбранных методов
+    if 'wind_speed' in detection_methods:
+        # Для расчета скорости ветра нужны компоненты ветра на 10м
+        single_level_vars.extend(['u10', 'v10'])
+    
+    if 'vorticity' in detection_methods:
+        # Для анализа завихренности нужна переменная vorticity (vo)
+        level = '850'  # Базовый уровень для завихренности
+        if level not in pressure_level_vars:
+            pressure_level_vars[level] = []
+        pressure_level_vars[level].append('vo')
+        
+        # Добавляем дополнительные уровни в зависимости от уровня детализации
+        if analysis_level in ['extended', 'comprehensive']:
+            additional_levels = ['925', '700']
+            for level in additional_levels:
+                if level not in pressure_level_vars:
+                    pressure_level_vars[level] = []
+                pressure_level_vars[level].append('vo')
+                
+        if analysis_level == 'comprehensive':
+            additional_levels = ['500', '300']
+            for level in additional_levels:
+                if level not in pressure_level_vars:
+                    pressure_level_vars[level] = []
+                pressure_level_vars[level].append('vo')
+    
+    if 'thermal' in detection_methods:
+        # Для определения термической структуры нужна температура на 700 гПа
+        level = '700'
+        if level not in pressure_level_vars:
+            pressure_level_vars[level] = []
+        pressure_level_vars[level].append('t')
+        
+        # Добавляем дополнительные уровни и переменные в зависимости от уровня детализации
+        if analysis_level in ['extended', 'comprehensive']:
+            additional_levels = ['850', '925']
+            for level in additional_levels:
+                if level not in pressure_level_vars:
+                    pressure_level_vars[level] = []
+                pressure_level_vars[level].append('t')
+            
+            # Добавляем геопотенциальную высоту для анализа термической структуры
+            thermal_levels = ['925', '850', '700', '500']
+            for level in thermal_levels:
+                if level in pressure_level_vars:
+                    pressure_level_vars[level].append('z')
+    
+    # Добавляем дополнительные переменные для расширенного анализа
+    if analysis_level in ['extended', 'comprehensive']:
+        if 'wind_speed' in detection_methods:
+            # Добавляем компоненты ветра на разных уровнях
+            for level in pressure_level_vars.keys():
+                pressure_level_vars[level].extend(['u', 'v'])
+        
+        if 'sst_gradient' in detection_methods or analysis_level == 'comprehensive':
+            single_level_vars.append('sst')  # Температура поверхности моря
+    
+    # Добавляем переменные для комплексного анализа
+    if analysis_level == 'comprehensive':
+        # Влагосодержание и осадки для полного анализа
+        single_level_vars.extend(['tcwv', 'tp'])
+        
+        # Добавляем удельную влажность на разных уровнях
+        for level in ['925', '850', '700']:
+            if level in pressure_level_vars:
+                pressure_level_vars[level].append('q')
+    
+    # Формируем общий список многослойных переменных
+    all_pressure_level_variables = []
+    for level_vars in pressure_level_vars.values():
+        for var in level_vars:
+            if var not in all_pressure_level_variables:
+                all_pressure_level_variables.append(var)
+    
+    # Удаляем дубликаты и сортируем
+    single_level_vars = sorted(list(set(single_level_vars)))
+    all_pressure_level_variables = sorted(list(set(all_pressure_level_variables)))
+    pressure_levels = sorted(list(pressure_level_vars.keys()), key=lambda x: int(x))
+    
+    # Оптимизируем словарь переменных по уровням (удаляем дубликаты)
+    for level in pressure_level_vars:
+        pressure_level_vars[level] = sorted(list(set(pressure_level_vars[level])))
+    
+    # Формируем результат
+    result = {
+        'variables': single_level_vars + all_pressure_level_variables,
+        'single_level_vars': single_level_vars,
+        'pressure_level_vars': all_pressure_level_variables,
+        'pressure_levels': pressure_levels,
+        'variables_by_level': pressure_level_vars
+    }
+    
+    return result
 
 # Добавьте эту функцию после импортов
 def convert_numpy_types(obj):
@@ -616,8 +797,10 @@ def main():
     """
     Главная функция для запуска процесса обнаружения арктических циклонов.
     """
-    # Настройка окружения
+    # Настройка окружения с автоматическим определением Google Colab или локального ПК
     arctic_dir, data_dir, image_dir, checkpoint_dir, model_dir = mount_drive_and_setup()
+    
+    # Настройка доступа к API CDS для загрузки данных ERA5
     setup_cdsapirc(arctic_dir)
     
     # Настраиваемые параметры: период анализа
@@ -627,12 +810,36 @@ def main():
     save_diagnostic = True  # Сохранять диагностические изображения
     cyclone_type = 'mesoscale'  # Тип обнаруживаемых циклонов
     
-    # Создаем визуализации критериев обнаружения
-    visualize_detection_criteria()
+    # Выбор уровня детализации анализа
+    analysis_level = 'basic'  # Можно выбрать: 'basic', 'extended', 'comprehensive'
     
-    # Загрузка данных ERA5
-    output_file = f"era5_arctic_meso_{start_date}_{end_date}.nc"
-    file_path = download_era5_data_extended(start_date, end_date, data_dir, output_file)
+    # Выбор методов обнаружения циклонов
+    # Можно выбрать любую комбинацию из: 'laplacian', 'pressure_minima', 'closed_contour', 
+    # 'gradient', 'vorticity', 'wind_speed', 'thermal', 'sst_gradient'
+    detection_methods = ['laplacian', 'wind_speed','thermal', 'sst_gradient', 'gradient', 'vorticity']
+    
+    # Создаем визуализации выбранных критериев обнаружения
+    visualize_detection_criteria(detection_methods)
+    
+    # Определяем необходимые данные ERA5 на основе выбранных методов и уровня анализа
+    era5_data_info = determine_required_era5_variables(detection_methods, analysis_level)
+    
+    print(f"Необходимые данные реанализа ERA5:")
+    print(f"  Однослойные переменные: {', '.join(era5_data_info['single_level_vars'])}")
+    if era5_data_info['pressure_level_vars']:
+        print(f"  Многослойные переменные: {', '.join(era5_data_info['pressure_level_vars'])}")
+        print(f"  Уровни давления: {', '.join(era5_data_info['pressure_levels'])}")
+    
+    # Загрузка данных ERA5 с указанием необходимых параметров
+    output_file = f"era5_arctic_{cyclone_type}_{start_date}_{end_date}.nc"
+    file_path = download_era5_data_extended(
+        start_date=start_date, 
+        end_date=end_date, 
+        data_dir=data_dir, 
+        output_file=output_file,
+        region=region,
+        era5_data_info=era5_data_info
+    )
     
     if file_path is None or not os.path.exists(file_path):
         print("Ошибка: не удалось загрузить или найти файл данных ERA5.")
@@ -641,7 +848,7 @@ def main():
     # Анализ структуры загруженных данных
     file_info = inspect_netcdf(file_path)
     
-    # Обработка данных и обнаружение циклонов
+    # Обработка данных и обнаружение циклонов с выбранными методами
     cyclones = process_era5_data(
         file_path, 
         image_dir, 
@@ -650,10 +857,25 @@ def main():
         resume=True, 
         save_diagnostic=save_diagnostic, 
         use_daily_step=True,
-        cyclone_type=cyclone_type
+        cyclone_type=cyclone_type,
+        detection_methods=detection_methods
     )
     
     print(f"Обработка завершена. Обнаружено циклонов: {len(cyclones) if cyclones else 0}")
+    
+    # Создание статистических визуализаций
+    if cyclones:
+        # Создаем базовую статистику
+        create_cyclone_statistics(cyclones, image_dir, file_prefix=f"{cyclone_type}_")
+        
+        # Визуализация эффекта выбранных методов обнаружения
+        visualize_detection_methods_effect(
+            cyclones, 
+            detection_methods, 
+            image_dir, 
+            file_prefix=f"{cyclone_type}_"
+        )
+
 
 if __name__ == "__main__":
     main()

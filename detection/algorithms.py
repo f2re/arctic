@@ -390,7 +390,7 @@ def has_significant_pressure_gradient(gradient_magnitude, lat_idx, lon_idx, neig
     return max_gradient >= threshold, max_gradient
 
 def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_var, 
-                           cyclone_params=None, cyclone_type='mesoscale'):
+                           cyclone_params=None, cyclone_type='mesoscale', detection_methods=None):
     """
     Оптимизированный алгоритм обнаружения арктических циклонов.
     
@@ -416,20 +416,33 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
         Словарь с параметрами алгоритма. Если None, используются выбранные параметры.
     cyclone_type : str, default='mesoscale'
         Тип циклонов для обнаружения: 'synoptic', 'mesoscale' или 'polar_low'
+    detection_methods : list, optional
+        Список методов обнаружения циклонов для использования. 
+        Возможные значения: 'laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed'.
+        По умолчанию используются все методы, соответствующие типу циклона.
     
     Возвращает:
     -----------
     tuple
         (давление, лапласиан, координаты центров циклонов, найдены ли циклоны, маска, диагностические данные)
     """
-   
-    # Остальная реализация сохраняется из оригинального файла
+    # Установка методов обнаружения по умолчанию, если не указаны
+    if detection_methods is None:
+        # Методы по умолчанию для каждого типа циклонов
+        if cyclone_type == 'synoptic':
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient']
+        elif cyclone_type == 'mesoscale':
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed']
+        else:  # polar_low
+            detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed']
+    
     # Проверяем и устанавливаем параметры алгоритма
     if cyclone_params is None:
         cyclone_params = get_cyclone_params(cyclone_type)
     
-    # Выводим информацию о типе обнаруживаемых циклонов
+    # Выводим информацию о типе обнаруживаемых циклонов и используемых методах
     print(f"Обнаружение циклонов типа: {cyclone_type}")
+    print(f"Используемые методы обнаружения: {', '.join(detection_methods)}")
     print(f"Диапазон размеров: {cyclone_params['min_cyclone_radius']}-{cyclone_params['max_cyclone_radius']} км")
 
     # Извлекаем параметры алгоритма
@@ -573,6 +586,7 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
     # Проверка наличия данных о ветре
     has_wind_data = False
     wind_field = None
+    # print(ds.variables)
     if '10m_wind_speed' in ds:
         has_wind_data = True
         try:
@@ -597,7 +611,6 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
     vorticity_var = None
     
     # Поиск переменной завихренности в наборе данных
-    print(ds.variables)
     for var in ds.variables:
         if 'vo' in var.lower():
             vorticity_var = var
@@ -763,60 +776,65 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
         # Смягчаем критерии для топологических центров
         is_topology_center = use_topology_check and topology_mask[min_lat_idx, min_lon_idx]
 
+        #  Применяем только выбранные методы детекции
         # Проверка давления
-        if min_pressure >= min_pressure_threshold and not is_topology_center:
-            rejected_info = {
-                "reason": "high_pressure",
-                "pressure": min_pressure,
-                "threshold": min_pressure_threshold,
-                "lat": lat_values[min_lat_idx],
-                "lon": lon_values[min_lon_idx],
-                "details": f"Давление в центре ({min_pressure:.1f} гПа) выше порога ({min_pressure_threshold} гПа)"
-            }
-            rejected_centers.append(rejected_info)
-            continue
+        if 'pressure_minima' in detection_methods:
+            if min_pressure >= min_pressure_threshold and not is_topology_center:
+                rejected_info = {
+                    "reason": "high_pressure",
+                    "pressure": min_pressure,
+                    "threshold": min_pressure_threshold,
+                    "lat": lat_values[min_lat_idx],
+                    "lon": lon_values[min_lon_idx],
+                    "details": f"Давление в центре ({min_pressure:.1f} гПа) выше порога ({min_pressure_threshold} гПа)"
+                }
+                rejected_centers.append(rejected_info)
+                continue
 
         # Проверка глубины
-        if depth < min_depth and not is_topology_center:
-            rejected_info = {
-                "reason": "shallow_depth",
-                "depth": depth,
-                "threshold": min_depth,
-                "lat": lat_values[min_lat_idx],
-                "lon": lon_values[min_lon_idx],
-                "details": f"Глубина циклона ({depth:.1f} гПа) меньше минимальной ({min_depth} гПа)"
-            }
-            rejected_centers.append(rejected_info)
-            continue
+        if 'pressure_minima' in detection_methods:
+            if depth < min_depth and not is_topology_center:
+                rejected_info = {
+                    "reason": "shallow_depth",
+                    "depth": depth,
+                    "threshold": min_depth,
+                    "lat": lat_values[min_lat_idx],
+                    "lon": lon_values[min_lon_idx],
+                    "details": f"Глубина циклона ({depth:.1f} гПа) меньше минимальной ({min_depth} гПа)"
+                }
+                rejected_centers.append(rejected_info)
+                continue
 
-        # Всегда требуем наличие замкнутых изобар
-        if not has_closed_contour:
-            rejected_info = {
-                "reason": "no_closed_contour",
-                "lat": lat_values[min_lat_idx],
-                "lon": lon_values[min_lon_idx],
-                "depth": depth,
-                "details": "Отсутствуют замкнутые изобары вокруг минимума давления"
-            }
-            rejected_centers.append(rejected_info)
-            continue
+        # Проверка замкнутых изобар
+        if 'closed_contour' in detection_methods:
+            if not has_closed_contour:
+                rejected_info = {
+                    "reason": "no_closed_contour",
+                    "lat": lat_values[min_lat_idx],
+                    "lon": lon_values[min_lon_idx],
+                    "depth": depth,
+                    "details": "Отсутствуют замкнутые изобары вокруг минимума давления"
+                }
+                rejected_centers.append(rejected_info)
+                continue
 
-        # Смягчаем требование к градиенту для топологических центров
-        if not has_gradient and not is_topology_center:
-            rejected_info = {
-                "reason": "weak_gradient",
-                "gradient": max_gradient,
-                "threshold": pressure_gradient_threshold,
-                "lat": lat_values[min_lat_idx],
-                "lon": lon_values[min_lon_idx],
-                "details": f"Градиент давления ({max_gradient:.2f} гПа/градус) ниже порога "
-                          f"({pressure_gradient_threshold} гПа/градус)"
-            }
-            rejected_centers.append(rejected_info)
-            continue
+        # Проверка градиента давления
+        if 'gradient' in detection_methods:
+            if not has_gradient and not is_topology_center:
+                rejected_info = {
+                    "reason": "weak_gradient",
+                    "gradient": max_gradient,
+                    "threshold": pressure_gradient_threshold,
+                    "lat": lat_values[min_lat_idx],
+                    "lon": lon_values[min_lon_idx],
+                    "details": f"Градиент давления ({max_gradient:.2f} гПа/градус) ниже порога "
+                              f"({pressure_gradient_threshold} гПа/градус)"
+                }
+                rejected_centers.append(rejected_info)
+                continue
 
-        # Проверка скорости ветра (если данные доступны)
-        if has_wind_data and "max_wind" in potential_center:
+        # Проверка скорости ветра (если данные доступны и метод выбран)
+        if 'wind_speed' in detection_methods and has_wind_data and "max_wind" in potential_center:
             max_wind = potential_center["max_wind"]
             if max_wind < min_wind_speed:
                 rejected_info = {
@@ -831,8 +849,8 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
                 rejected_centers.append(rejected_info)
                 continue
 
-        # Проверка завихренности (если данные доступны)
-        if has_vorticity_data and "max_vorticity" in potential_center:
+        # Проверка завихренности (если данные доступны и метод выбран)
+        if 'vorticity' in detection_methods and has_vorticity_data and "max_vorticity" in potential_center:
             max_vorticity = potential_center["max_vorticity"]
             if max_vorticity < min_vorticity:
                 rejected_info = {
@@ -914,7 +932,7 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
 
     # Создаем новую маску, содержащую только валидные циклоны
     valid_mask = np.isin(labeled_cyclones, valid_cyclones)
-
+    
     # Собираем диагностические данные
     diagnostic_data = {
         "all_potential_centers": all_potential_centers,
@@ -930,7 +948,8 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
         "min_wind_speed": min_wind_speed,
         "min_vorticity": min_vorticity,
         "cyclone_type": cyclone_type,
-        "cyclone_params": cyclone_params
+        "cyclone_params": cyclone_params,
+        "detection_methods":detection_methods
     }
 
     return pressure, laplacian, cyclone_centers, cyclones_found, valid_mask, diagnostic_data

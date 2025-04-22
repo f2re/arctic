@@ -8,103 +8,191 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
+from .config import DEFAULT_CRITERIA_DIR
 
-def visualize_detection_criteria():
+def visualize_detection_criteria(detection_methods=None):
     """
     Создает наглядные изображения критериев обнаружения арктических циклонов
-    на основе стандартов детекции.
+    на основе стандартов детекции с возможностью выбора методов.
+    
+    Параметры:
+    ----------
+    detection_methods : list, optional
+        Список методов обнаружения циклонов для визуализации.
+        Если None, визуализируются все доступные методы.
     """
+    # Установка методов по умолчанию, если не указаны
+    if detection_methods is None:
+        detection_methods = ['laplacian', 'pressure_minima', 'closed_contour', 'gradient', 'vorticity', 'wind_speed']
+    
     # Создаем директорию для сохранения визуализаций
-    output_dir = os.path.join('/content/drive/MyDrive/arctic', 'criteria_images')
+    output_dir = DEFAULT_CRITERIA_DIR
     os.makedirs(output_dir, exist_ok=True)
     
-    # 1. Визуализация критериев Okubo-Weiss
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    # Создаем визуализации только для выбранных методов
+    methods_to_visualize = []
+    if 'laplacian' in detection_methods:
+        methods_to_visualize.append(('laplacian', 'Лапласиан давления'))
+    if 'pressure_minima' in detection_methods:
+        methods_to_visualize.append(('pressure_minima', 'Минимумы давления'))
+    if 'closed_contour' in detection_methods:
+        methods_to_visualize.append(('closed_contour', 'Замкнутые изобары'))
+    if 'gradient' in detection_methods:
+        methods_to_visualize.append(('gradient', 'Градиент давления'))
+    if 'vorticity' in detection_methods:
+        methods_to_visualize.append(('vorticity', 'Относительная завихренность'))
+    if 'wind_speed' in detection_methods:
+        methods_to_visualize.append(('wind_speed', 'Скорость ветра'))
     
-    # Схематический рисунок для вихря с положительной завихренностью
-    ax = axes[0, 0]
-    ax.set_aspect('equal')
-    circle = plt.Circle((0.5, 0.5), 0.4, fill=False, color='blue')
-    ax.add_patch(circle)
-    for theta in np.linspace(0, 2*np.pi, 12):
-        r = 0.4
-        x = 0.5 + r * np.cos(theta)
-        y = 0.5 + r * np.sin(theta)
-        dx = 0.1 * np.sin(theta)
-        dy = -0.1 * np.cos(theta)
-        ax.arrow(x, y, dx, dy, head_width=0.02, head_length=0.03, fc='blue', ec='blue')
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_title('Циклонический вихрь\n(положительная завихренность)')
-    ax.axis('off')
+    # 1. Визуализация выбранных критериев на одном графике
+    n_methods = len(methods_to_visualize)
+    rows = (n_methods + 1) // 2
+    cols = min(2, n_methods)
     
-    # Схематический график для параметра Okubo-Weiss
-    ax = axes[0, 1]
-    x = np.linspace(-1, 1, 100)
-    y = np.linspace(-1, 1, 100)
-    X, Y = np.meshgrid(x, y)
-    R = np.sqrt(X**2 + Y**2)
-    W = -(1 - R**2) * np.exp(-R**2/0.5)
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 7 * rows))
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    else:
+        axes = axes.flatten()
     
-    levels = np.linspace(-1, 1, 21)
-    cf = ax.contourf(X, Y, W, levels=levels, cmap='RdBu_r')
-    ax.contour(X, Y, W, levels=[0], colors='k', linewidths=1.5)
-    ax.set_aspect('equal')
-    ax.set_title('Параметр Okubo-Weiss (W)\nW < 0 в областях с доминирующей завихренностью')
-    plt.colorbar(cf, ax=ax)
+    # Создаем схематическое представление для каждого выбранного метода
+    for i, (method, title) in enumerate(methods_to_visualize):
+        if i < len(axes):
+            ax = axes[i]
+            
+            # Схематическое представление в зависимости от метода
+            if method == 'laplacian':
+                # Визуализация лапласиана
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
+                
+                # Лапласиан давления
+                dP2_dx2 = (np.gradient(np.gradient(P, axis=1), axis=1))
+                dP2_dy2 = (np.gradient(np.gradient(P, axis=0), axis=0))
+                laplacian = dP2_dx2 + dP2_dy2
+                
+                levels_p = np.linspace(985, 1000, 11)
+                levels_l = np.linspace(-1, 1, 21)
+                
+                cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
+                cf = ax.contourf(X, Y, laplacian, levels=levels_l, cmap='RdBu_r', alpha=0.7)
+                ax.contour(X, Y, laplacian, levels=[-0.15], colors='r', linewidths=1.5)
+                plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
+                plt.colorbar(cf, ax=ax, label='Лапласиан давления')
+            
+            elif method == 'pressure_minima':
+                # Визуализация минимумов давления
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
+                
+                levels_p = np.linspace(985, 1000, 11)
+                cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
+                cf = ax.contourf(X, Y, P, levels=levels_p, cmap='viridis', alpha=0.7)
+                plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
+                
+                # Отмечаем центр
+                ax.plot(0, 0, 'ro', markersize=10)
+                ax.text(0, 0, '985', ha='center', va='bottom', color='white', fontsize=10,
+                      bbox=dict(facecolor='red', alpha=0.5))
+                
+                plt.colorbar(cf, ax=ax, label='Давление (гПа)')
+            
+            elif method == 'closed_contour':
+                # Визуализация замкнутых изобар
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
+                
+                levels_p = np.linspace(985, 1000, 11)
+                cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
+                plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
+                
+                # Отмечаем центр и радиус проверки
+                circle = plt.Circle((0, 0), 0.5, fill=False, color='red', linestyle='--')
+                ax.add_patch(circle)
+                ax.plot(0, 0, 'ro', markersize=8)
+                ax.text(0, 0, '985', ha='right', va='bottom', color='red', fontsize=10)
+                ax.text(0.5, 0.5, 'Радиус проверки', ha='right', va='bottom', color='red', fontsize=10)
+            
+            elif method == 'gradient':
+                # Визуализация градиента давления
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
+                
+                # Градиент давления
+                dP_dx = np.gradient(P, axis=1)
+                dP_dy = np.gradient(P, axis=0)
+                gradient = np.sqrt(dP_dx**2 + dP_dy**2)
+                
+                levels_p = np.linspace(985, 1000, 11)
+                cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
+                cf = ax.contourf(X, Y, gradient, levels=20, cmap='YlOrRd')
+                ax.contour(X, Y, gradient, levels=[0.5], colors='r', linewidths=1.5)
+                plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
+                
+                plt.colorbar(cf, ax=ax, label='Градиент давления (гПа/градус)')
+            
+            elif method == 'vorticity':
+                # Визуализация завихренности
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                
+                # Модель завихренности
+                vorticity = -np.exp(-R**2/0.3) * 1e-5
+                
+                levels_v = np.linspace(-2e-5, 2e-5, 21)
+                cf = ax.contourf(X, Y, vorticity, levels=levels_v, cmap='RdBu_r')
+                ax.contour(X, Y, vorticity, levels=[-1e-5], colors='r', linewidths=1.5)
+                
+                plt.colorbar(cf, ax=ax, label='Относительная завихренность (с⁻¹)')
+            
+            elif method == 'wind_speed':
+                # Визуализация скорости ветра
+                x = np.linspace(-1, 1, 100)
+                y = np.linspace(-1, 1, 100)
+                X, Y = np.meshgrid(x, y)
+                R = np.sqrt(X**2 + Y**2)
+                
+                # Модель поля ветра вокруг циклона
+                wind_speed = 15 * (1 - np.exp(-R**2/0.2))
+                
+                levels_w = np.linspace(0, 20, 21)
+                cf = ax.contourf(X, Y, wind_speed, levels=levels_w, cmap='YlGnBu')
+                ax.contour(X, Y, wind_speed, levels=[15], colors='r', linewidths=1.5)
+                
+                # Отмечаем центр
+                ax.plot(0, 0, 'ro', markersize=8)
+                
+                plt.colorbar(cf, ax=ax, label='Скорость ветра (м/с)')
+            
+            ax.set_aspect('equal')
+            ax.set_title(title)
+            ax.axis('off')
     
-    # Схематическое представление критерия на основе лапласиана давления
-    ax = axes[1, 0]
-    x = np.linspace(-1, 1, 100)
-    y = np.linspace(-1, 1, 100)
-    X, Y = np.meshgrid(x, y)
-    R = np.sqrt(X**2 + Y**2)
-    P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
+    # Скрываем пустые графики
+    for i in range(len(methods_to_visualize), len(axes)):
+        axes[i].set_visible(False)
     
-    # Лапласиан давления
-    dP2_dx2 = (np.gradient(np.gradient(P, axis=1), axis=1))
-    dP2_dy2 = (np.gradient(np.gradient(P, axis=0), axis=0))
-    laplacian = dP2_dx2 + dP2_dy2
+    # Общий заголовок
+    plt.suptitle("Критерии обнаружения арктических циклонов", fontsize=16)
     
-    levels_p = np.linspace(985, 1000, 11)
-    levels_l = np.linspace(-1, 1, 21)
-    
-    cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
-    cf = ax.contourf(X, Y, laplacian, levels=levels_l, cmap='RdBu_r', alpha=0.7)
-    plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
-    ax.set_aspect('equal')
-    ax.set_title('Лапласиан давления\nОтрицательные значения указывают на циклон')
-    plt.colorbar(cf, ax=ax)
-    
-    # Схематическое представление замкнутых изобар
-    ax = axes[1, 1]
-    x = np.linspace(-1, 1, 100)
-    y = np.linspace(-1, 1, 100)
-    X, Y = np.meshgrid(x, y)
-    R = np.sqrt(X**2 + Y**2)
-    P = 1000 - 15 * np.exp(-R**2/0.3)  # Давление с минимумом в центре
-    
-    # Градиент давления
-    dP_dx = np.gradient(P, axis=1)
-    dP_dy = np.gradient(P, axis=0)
-    gradient = np.sqrt(dP_dx**2 + dP_dy**2)
-    
-    levels_p = np.linspace(985, 1000, 11)
-    cs = ax.contour(X, Y, P, levels=levels_p, colors='k', linewidths=0.5)
-    plt.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
-    
-    # Отмечаем центр и радиус проверки
-    circle = plt.Circle((0, 0), 0.5, fill=False, color='red', linestyle='--')
-    ax.add_patch(circle)
-    ax.plot(0, 0, 'ro', markersize=8)
-    ax.text(0, 0, '985', ha='right', va='bottom', color='red', fontsize=10)
-    
-    ax.set_aspect('equal')
-    ax.set_title('Замкнутые изобары\nНеобходимый критерий для циклона')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'cyclone_detection_criteria_1.png'), dpi=300, bbox_inches='tight')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(os.path.join(output_dir, 'cyclone_detection_criteria.png'), dpi=300, bbox_inches='tight')
     plt.close()
+    
     
     # 2. Визуализация комплексного подхода к детекции
     fig = plt.figure(figsize=(15, 10))

@@ -31,7 +31,7 @@
   - [Модуль анализа](#модуль-анализа)
   - [Модуль визуализации](#модуль-визуализации)
 - [Типичные задачи](#типичные-задачи)
-- [Цитирование и ссылки](#цитирование-и-ссылки)
+
 
 ## Введение
 
@@ -1752,25 +1752,3 @@ plt.tight_layout()
 plt.savefig('/path/to/output/intense_cyclone_evolution.png', dpi=300)
 plt.close()
 ```
-
-## Цитирование и ссылки
-
-При использовании ACDAT в научных публикациях, пожалуйста, ссылайтесь на следующие источники:
-
-### Основные методологические работы
-
-1. **Neu, U. et al. (2013)** "IMILAST: A Community Effort to Intercompare Extratropical Cyclone Detection and Tracking Algorithms". Bulletin of the American Meteorological Society, 94(4), 529-547.
-
-2. **Simmonds, I. et al. (2008)** "A new look at an old concept: cyclone tracking in different reanalysis data sets", Climate Dynamics, 33, 341-353.
-
-3. **Rudeva, I. and Gulev, S.K. (2007)** "Climatology of cyclone size characteristics and their changes during the cyclone life cycle", Monthly Weather Review, 135, 2568-2587.
-
-### Для ERA5 реанализа
-
-- **Hersbach, H. et al. (2020)** "The ERA5 global reanalysis". Quarterly Journal of the Royal Meteorological Society, 146(730), 1999-2049.
-
-### Для арктических циклонов
-
-- **Simmonds, I. and Keay, K. (2009)** "Extraordinary September Arctic sea ice reductions and their relationships with storm behavior over 1979-2008". Geophysical Research Letters, 36, L19715.
-
-- **Zahn, M. and von Storch, H. (2008)** "A long-term climatology of North Atlantic polar lows". Geophysical Research Letters, 35, L22702.

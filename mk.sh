@@ -1,52 +1,69 @@
 #!/bin/bash
 
-# Create main project directory
-mkdir -p arctic_cyclones
+# Script to initialize Arctic Mesocyclone Framework project structure
 
-# Create main files
-touch arctic_cyclones/config.py
-touch arctic_cyclones/main.py
+# Create core module
+mkdir -p core
+touch core/__init__.py
+touch core/config.py
+touch core/exceptions.py
+touch core/logging_setup.py
 
-# Create data module
-mkdir -p arctic_cyclones/data
-touch arctic_cyclones/data/__init__.py
-touch arctic_cyclones/data/download.py
-touch arctic_cyclones/data/preprocessing.py
+# Create data management subsystem
+mkdir -p data/processors data/adapters
+touch data/__init__.py
+touch data/acquisition.py
+touch data/credentials.py
+touch data/catalog.py
+touch data/processors/__init__.py
+touch data/adapters/__init__.py
 
-# Create detection module
-mkdir -p arctic_cyclones/detection
-touch arctic_cyclones/detection/__init__.py
-touch arctic_cyclones/detection/parameters.py
-touch arctic_cyclones/detection/algorithms.py
-touch arctic_cyclones/detection/thermal.py
+# Create detection algorithms
+mkdir -p detection/criteria detection/algorithms
+touch detection/__init__.py
+touch detection/tracker.py
+touch detection/validators.py
+touch detection/criteria/__init__.py
+touch detection/algorithms/__init__.py
 
-# Create analysis module
-mkdir -p arctic_cyclones/analysis
-touch arctic_cyclones/analysis/__init__.py
-touch arctic_cyclones/analysis/metrics.py
-touch arctic_cyclones/analysis/tracking.py
+# Create meteorological data representation
+mkdir -p models
+touch models/__init__.py
+touch models/cyclone.py
+touch models/parameters.py
+touch models/classifications.py
 
-# Create visualization module
-mkdir -p arctic_cyclones/visualization
-touch arctic_cyclones/visualization/__init__.py
-touch arctic_cyclones/visualization/plots.py
-touch arctic_cyclones/visualization/diagnostics.py
+# Create analysis capabilities
+mkdir -p analysis
+touch analysis/__init__.py
+touch analysis/statistics.py
+touch analysis/comparisons.py
+touch analysis/climatology.py
 
-# Add file descriptions as comments
-echo "# Конфигурационные параметры" > arctic_cyclones/config.py
-echo "# Главный скрипт запуска" > arctic_cyclones/main.py
-echo "# Функции загрузки данных ERA5" > arctic_cyclones/data/download.py
-echo "# Предобработка данных" > arctic_cyclones/data/preprocessing.py
-echo "# Параметры для разных типов циклонов" > arctic_cyclones/detection/parameters.py
-echo "# Алгоритмы обнаружения" > arctic_cyclones/detection/algorithms.py
-echo "# Классификация термической структуры" > arctic_cyclones/detection/thermal.py
-echo "# Расчет метрик циклонов" > arctic_cyclones/analysis/metrics.py
-echo "# Отслеживание циклонов во времени" > arctic_cyclones/analysis/tracking.py
-echo "# Функции визуализации" > arctic_cyclones/visualization/plots.py
-echo "# Диагностические визуализации" > arctic_cyclones/visualization/diagnostics.py
+# Create visualization subsystem
+mkdir -p visualization
+touch visualization/__init__.py
+touch visualization/mappers.py
+touch visualization/tracks.py
+touch visualization/parameters.py
+touch visualization/heatmaps.py
 
-echo "Arctic cyclones project structure created successfully!"
+# Create export facilities
+mkdir -p export/formats
+touch export/__init__.py
+touch export/formats/__init__.py
+touch export/publishers.py
+touch export/formats/csv_exporter.py
 
-# Print the created structure
-echo "Created structure:"
-find arctic_cyclones -type f | sort
+# Create output directories
+mkdir -p output/figures output/data
+
+# Create main workflow script
+touch main.py
+
+# Create setup files
+touch setup.py
+touch README.md
+touch requirements.txt
+
+echo "Arctic Mesocyclone Framework project structure initialized successfully!"

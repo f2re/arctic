@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 import json
 import logging
-from ..core.exceptions import CredentialError
+from core.exceptions import CredentialError
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)

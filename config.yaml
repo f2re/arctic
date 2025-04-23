@@ -1,0 +1,65 @@
+# ArcticCyclone Configuration File
+
+# Data acquisition settings
+data:
+  default_source: 'ERA5'
+  cache_dir: 'data/cache'
+  sources:
+    ERA5:
+      type: 'reanalysis'
+      variables: ['z', 'u', 'v', 't', 'q', 'vo']  # Geopotential, wind components, temperature, humidity, vorticity
+      levels: [1000, 925, 850, 700, 500, 300]     # Pressure levels in hPa
+      url: 'https://cds.climate.copernicus.eu/api/v2'
+      grid_resolution: 0.25  # Degrees (0.25° ≈ 28 km)
+
+# Detection settings
+detection:
+  min_latitude: 70.0  # Minimum latitude (degrees North) for Arctic region
+  criteria:
+    pressure_minimum:
+      enabled: true
+      threshold: 1010.0  # Maximum pressure to consider (hPa)
+      gradient_threshold: 0.5  # Minimum pressure gradient (hPa/100km)
+    vorticity:
+      enabled: true
+      threshold: 1.0e-5  # Minimum vorticity (1/s)
+      level: 850  # Pressure level for vorticity analysis (hPa)
+    closed_contour:
+      enabled: true
+      contour_interval: 5.0  # Pressure contour interval (hPa)
+    wind_threshold:
+      enabled: false
+      min_speed: 15.0  # Minimum wind speed (m/s)
+  tracking:
+    max_distance: 300.0  # Maximum distance between timesteps (km)
+    max_pressure_change: 10.0  # Maximum pressure change between timesteps (hPa)
+    max_time_gap: 12  # Maximum gap in hours between detections
+    min_duration: 6.0  # Minimum track duration (hours)
+    min_points: 3  # Minimum number of points in a valid track
+
+# Visualization settings
+visualization:
+  default_projection: 'NorthPolarStereo'  # Polar stereographic projection
+  map_resolution: 'intermediate'  # Map resolution (low, intermediate, high)
+  output_dir: 'output/figures'
+  default_dpi: 300
+  cyclone_marker_size: 30
+  track_line_width: 1.5
+  color_map: 'viridis'  # Default colormap for heatmaps
+  map_features:
+    coastlines: true
+    countries: true
+    grid_lines: true
+    grid_labels: true
+
+# Export settings
+export:
+  output_dir: 'output/data'
+  formats: ['csv', 'netcdf']
+  default_format: 'csv'
+  csv:
+    delimiter: ','
+    include_header: true
+  netcdf:
+    compression_level: 4
+    include_metadata: true

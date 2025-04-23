@@ -7,3 +7,5 @@ __pycache__
 .cdsapirc
 images/
 visualization/criteria/
+output/
+.credentials.json

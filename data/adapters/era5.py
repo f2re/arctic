@@ -13,8 +13,8 @@ from datetime import datetime
 import logging
 import os
 
-from ...core.exceptions import DataSourceError, CredentialError
-from ..acquisition import BaseDataAdapter
+from core.exceptions import DataSourceError, CredentialError
+from data.acquisition import BaseDataAdapter
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -94,7 +94,11 @@ class ERA5Adapter(BaseDataAdapter):
             
             logger.info(f"Данные успешно загружены: {temp_file}")
             dataset = xr.open_dataset(temp_file)
-            
+            # Переименование координаты времени для обеспечения совместимости
+            if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
+                logger.info("Переименование координаты 'valid_time' в 'time' для совместимости")
+                dataset = dataset.rename({'valid_time': 'time'})
+
             # Применяем постобработку в зависимости от типа данных
             dataset = self._postprocess_dataset(dataset, dataset_type)
             

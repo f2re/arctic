@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 import logging
 import hashlib
 
-from ..core.exceptions import DataSourceError, CredentialError
+from core.exceptions import DataSourceError, CredentialError
 from .credentials import CredentialManager
 
 # Инициализация логгера
@@ -31,28 +31,28 @@ class DataSourceManager:
     с поддержкой кэширования и учета аутентификационных данных.
     """
     
-    def __init__(self, config_path: Optional[Path] = None, 
-                cache_dir: Optional[Path] = None):
+    def __init__(self, config_path: Optional[Path] = None,
+             cache_dir: Optional[Path] = None,
+             credentials: Optional[CredentialManager] = None):
         """
         Инициализирует менеджер источников данных.
-        
+
         Аргументы:
             config_path: Путь к файлу конфигурации. Если не указан, используется
-                         конфигурация по умолчанию.
+                        конфигурация по умолчанию.
             cache_dir: Директория для кэширования данных. Если не указана, используется
-                       директория из конфигурации.
+                    директория из конфигурации.
+            credentials: Экземпляр CredentialManager. Если не указан, создается новый.
         """
-        from ..core.config import ConfigManager
-        
+        from core.config import ConfigManager
         self.config = ConfigManager(config_path)
-        self.credentials = CredentialManager()
+        self.credentials = credentials or CredentialManager()
         self.cache_dir = cache_dir or Path(self.config.get('data', 'cache_dir'))
         self.adapters = self._initialize_adapters()
-        
         # Создаем директорию кэша, если она не существует
         os.makedirs(self.cache_dir, exist_ok=True)
-        
         logger.info(f"Инициализирован менеджер источников данных с {len(self.adapters)} адаптерами")
+
     
     def _initialize_adapters(self) -> Dict[str, Any]:
         """
@@ -369,11 +369,6 @@ class ERA5Adapter(BaseDataAdapter):
             dataset.attrs['request_parameters'] = str(request_params)
             
             return dataset
-            
-        except cdsapi.api.Exception as e:
-            error_msg = f"Ошибка API CDS при получении данных ERA5: {str(e)}"
-            logger.error(error_msg)
-            raise DataSourceError(error_msg)
             
         except CredentialError as e:
             logger.error(f"Ошибка аутентификации ERA5: {str(e)}")

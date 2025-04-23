@@ -276,7 +276,7 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
 
         print(f"\nОбработка временного шага {time_idx+1}/{time_steps}: {time_str}")
         
-        # Добавьте этот код после загрузки датасета, но до цикла по временным шагам
+        
         if 'u10' in ds.variables and 'v10' in ds.variables:
             print(f"Найдены компоненты ветра: u10, v10. Вычисляю скорость ветра для всего датасета...")
             
@@ -324,18 +324,37 @@ def process_era5_data(file_path, output_dir, checkpoint_dir, model_dir, resume=T
             has_vorticity_data = False
             print("ВНИМАНИЕ: Переменная завихренности не найдена. Критерий завихренности не будет применяться.")
 
-        # Проверяем наличие дополнительных переменных для критериев мезоциклонов
+        # Модификация блока обработки данных о ветре
         has_wind_data = False
-        
-        # В функции process_era5_data добавить проверки
+        wind_field = None
+
         if '10m_wind_speed' in ds.variables:
             has_wind_data = True
             print(f"Найдены данные о скорости ветра: переменная '10m_wind_speed'")
+            wind_field = ds['10m_wind_speed']
+        elif 'u10' in ds.variables and 'v10' in ds.variables:
+            has_wind_data = True
+            print(f"Найдены компоненты ветра: u10, v10. Вычисляю скорость ветра для всего датасета...")
+            
+            # Вычисляем скорость ветра для всего датасета
+            wind_speed = np.sqrt(ds['u10']**2 + ds['v10']**2)
+            
+            # Добавляем вычисленную переменную как новую переменную датасета
+            ds['10m_wind_speed'] = wind_speed
+            wind_field = ds['10m_wind_speed']
+            print(f"Скорость ветра успешно вычислена для всего датасета")
         elif '10m_u_component_of_wind' in ds.variables and '10m_v_component_of_wind' in ds.variables:
             has_wind_data = True
-            print(f"Найдены компоненты ветра. Будет вычислена скорость ветра.")
+            print(f"Найдены компоненты ветра: 10m_u_component_of_wind, 10m_v_component_of_wind. Вычисляю скорость ветра...")
+            
+            # Вычисляем скорость ветра для всего датасета
+            wind_speed = np.sqrt(ds['10m_u_component_of_wind']**2 + ds['10m_v_component_of_wind']**2)
+            
+            # Добавляем вычисленную переменную как новую переменную датасета
+            ds['10m_wind_speed'] = wind_speed
+            wind_field = ds['10m_wind_speed']
+            print(f"Скорость ветра успешно вычислена для всего датасета")
         else:
-            has_wind_data = False
             print("ВНИМАНИЕ: Данные о скорости ветра не найдены. Критерий скорости ветра не будет применяться.")
 
         vorticity_var = next((var for var in ds.variables if 'vo' in var.lower()), None)
@@ -668,7 +687,7 @@ def determine_required_era5_variables(detection_methods, analysis_level='basic')
     # Добавляем переменные в зависимости от выбранных методов
     if 'wind_speed' in detection_methods:
         # Для расчета скорости ветра нужны компоненты ветра на 10м
-        single_level_vars.extend(['u10', 'v10'])
+        single_level_vars.extend(['u10', 'v10', '10m_u_component_of_wind', '10m_v_component_of_wind'])
     
     if 'vorticity' in detection_methods:
         # Для анализа завихренности нужна переменная vorticity (vo)

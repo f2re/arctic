@@ -586,24 +586,35 @@ def detect_cyclones_improved(ds, time_idx, time_dim, pressure_var, lat_var, lon_
     # Проверка наличия данных о ветре
     has_wind_data = False
     wind_field = None
-    # print(ds.variables)
-    if '10m_wind_speed' in ds:
+
+    if '10m_wind_speed' in ds.variables:
         has_wind_data = True
-        try:
-            if time_dim in ds['10m_wind_speed'].dims:
-                wind_field = ds['10m_wind_speed'].isel({time_dim: time_idx}).values
-            else:
-                wind_field = ds['10m_wind_speed'].values
-                
-            if len(wind_field.shape) > 2:
-                wind_field = wind_field[0] if wind_field.shape[0] <= 10 else wind_field
-                
-            print(f"Данные о скорости ветра доступны. Максимальная скорость: {np.max(wind_field):.2f} м/с")
-        except Exception as e:
-            print(f"Ошибка при чтении данных о скорости ветра: {e}")
-            has_wind_data = False
+        print(f"Найдены данные о скорости ветра: переменная '10m_wind_speed'")
+        wind_field = ds['10m_wind_speed']
+    elif 'u10' in ds.variables and 'v10' in ds.variables:
+        has_wind_data = True
+        print(f"Найдены компоненты ветра: u10, v10. Вычисляю скорость ветра для всего датасета...")
+        
+        # Вычисляем скорость ветра для всего датасета
+        wind_speed = np.sqrt(ds['u10']**2 + ds['v10']**2)
+        
+        # Добавляем вычисленную переменную как новую переменную датасета
+        ds['10m_wind_speed'] = wind_speed
+        wind_field = ds['10m_wind_speed']
+        print(f"Скорость ветра успешно вычислена для всего датасета")
+    elif '10m_u_component_of_wind' in ds.variables and '10m_v_component_of_wind' in ds.variables:
+        has_wind_data = True
+        print(f"Найдены компоненты ветра: 10m_u_component_of_wind, 10m_v_component_of_wind. Вычисляю скорость ветра...")
+        
+        # Вычисляем скорость ветра для всего датасета
+        wind_speed = np.sqrt(ds['10m_u_component_of_wind']**2 + ds['10m_v_component_of_wind']**2)
+        
+        # Добавляем вычисленную переменную как новую переменную датасета
+        ds['10m_wind_speed'] = wind_speed
+        wind_field = ds['10m_wind_speed']
+        print(f"Скорость ветра успешно вычислена для всего датасета")
     else:
-        print("Данные о скорости ветра отсутствуют. Критерий скорости ветра не будет применяться.")
+        print("ВНИМАНИЕ: Данные о скорости ветра не найдены. Критерий скорости ветра не будет применяться.")
     
     # Проверка наличия данных о завихренности
     has_vorticity_data = False

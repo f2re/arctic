@@ -72,8 +72,15 @@ class VorticityCriterion(BaseCriterion):
             vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
             vorticity_var = None
             
+            # Select the specific time step first to simplify processing
+            time_data = dataset.sel(time=time_step)
+            
+            # Log available variables for debugging
+            logger.debug(f"Available variables: {list(time_data.variables)}")
+            logger.debug(f"Available dimensions: {time_data.dims}")
+            
             for var in vorticity_vars:
-                if var in dataset:
+                if var in time_data:
                     vorticity_var = var
                     break
             
@@ -91,7 +98,7 @@ class VorticityCriterion(BaseCriterion):
                 u_var, v_var = None, None
                 
                 for u, v in wind_vars:
-                    if u in dataset and v in dataset:
+                    if u in time_data and v in time_data:
                         u_var, v_var = u, v
                         break
                 
@@ -99,99 +106,113 @@ class VorticityCriterion(BaseCriterion):
                     raise ValueError("Не удается найти компоненты ветра для расчета завихренности")
                 
                 # Рассчитываем завихренность
-                vorticity_var = self._calculate_vorticity(dataset, time_step, u_var, v_var)
-                
-                # Add diagnostic logging to check if vorticity was calculated correctly
-                if 'vorticity' in dataset:
-                    vorticity_data = dataset['vorticity'].values
-                    logger.info(f"Vorticity calculated with shape: {vorticity_data.shape}")
-                    logger.info(f"Vorticity data stats - min: {np.nanmin(vorticity_data) if vorticity_data.size > 0 else 'N/A'}, " 
-                              f"max: {np.nanmax(vorticity_data) if vorticity_data.size > 0 else 'N/A'}, "
-                              f"mean: {np.nanmean(vorticity_data) if vorticity_data.size > 0 else 'N/A'}")
-                    logger.info(f"NaN count: {np.isnan(vorticity_data).sum()}/{vorticity_data.size}")
-                    
-                    # Check if vorticity is within expected range
-                    if vorticity_data.size > 0 and not np.isnan(vorticity_data).all():
-                        # Typical vorticity values for cyclones are around 10^-5 to 10^-4 s^-1
-                        strong_vorticity_points = np.where(vorticity_data > self.vorticity_threshold)[0].size
-                        logger.info(f"Points with vorticity > {self.vorticity_threshold}: {strong_vorticity_points}")
-                    else:
-                        logger.warning("Vorticity array is empty or all values are NaN")
-                else:
-                    logger.warning("Failed to add vorticity to dataset")
+                vorticity_var = self._calculate_vorticity(time_data, time_step, u_var, v_var)
             
-            # Выбираем временной шаг и применяем маску региона
-            time_data = dataset.sel(time=time_step)
+            # Apply mask for Arctic region
             arctic_data = time_data.where(time_data.latitude >= self.min_latitude, drop=True)
             
-            # Выбираем нужный уровень давления, если есть измерение уровня
+            # Check if vorticity is available in the dataset
+            if vorticity_var not in arctic_data:
+                logger.error(f"Переменная завихренности не найдена в отфильтрованном наборе данных")
+                return []
+            
+            # Extract vorticity at the specified pressure level
+            vorticity_data = None
+            
+            # Check if we have pressure levels
             pressure_level_names = ['level', 'pressure_level', 'lev', 'plev']
-            has_levels = False
             
             for level_name in pressure_level_names:
                 if level_name in arctic_data.dims:
-                    has_levels = True
-                    # Выбираем ближайший доступный уровень к 850 гПа
+                    # Find the closest available level to the specified pressure level
                     available_levels = arctic_data[level_name].values
                     closest_level = available_levels[np.abs(available_levels - self.pressure_level).argmin()]
+                    logger.debug(f"Using pressure level {closest_level} hPa (closest to target {self.pressure_level} hPa)")
                     
-                    if closest_level != self.pressure_level:
-                        logger.warning(f"Уровень {self.pressure_level} гПа недоступен, "
-                                      f"используем ближайший: {closest_level} гПа")
-                    
-                    level_data = arctic_data.sel({level_name: closest_level})
-                    vorticity_field = level_data[vorticity_var].values
+                    # Select the appropriate level
+                    vorticity_data = arctic_data[vorticity_var].sel({level_name: closest_level})
                     break
             
-            if not has_levels:
-                # Если нет измерения уровня, используем данные как есть
-                vorticity_field = arctic_data[vorticity_var].values
+            # If no level dimension found, use the data as is
+            if vorticity_data is None:
+                vorticity_data = arctic_data[vorticity_var]
             
-            # Сглаживаем поле для уменьшения шума
+            # Apply a threshold to identify areas with high vorticity
             if self.smooth_sigma > 0:
-                smoothed_field = ndimage.gaussian_filter(vorticity_field, sigma=self.smooth_sigma)
+                try:
+                    # Make sure we have a 2D array for smoothing
+                    vort_values = vorticity_data.values
+                    if vort_values.ndim > 2:
+                        logger.warning(f"Vorticity data has shape {vort_values.shape}, flattening extra dimensions")
+                        # If we have more than 2 dimensions, flatten all but lat/lon
+                        if hasattr(vorticity_data, 'latitude') and hasattr(vorticity_data, 'longitude'):
+                            # Reshape to (lat, lon) if those are the last two dimensions
+                            if vort_values.shape[-2:] == (len(arctic_data.latitude), len(arctic_data.longitude)):
+                                vort_values = vort_values.reshape(-1, *vort_values.shape[-2:])[-1]
+                            else:
+                                # Try other reshaping approaches
+                                vort_values = vort_values.mean(axis=tuple(range(vort_values.ndim - 2)))
+                    
+                    # Apply Gaussian smoothing
+                    smoothed_vorticity = ndimage.gaussian_filter(vort_values, sigma=self.smooth_sigma)
+                except Exception as e:
+                    logger.warning(f"Error during vorticity smoothing: {str(e)}")
+                    smoothed_vorticity = vorticity_data.values
             else:
-                smoothed_field = vorticity_field
+                smoothed_vorticity = vorticity_data.values
             
-            # Находим локальные максимумы (положительная завихренность для циклонов)
-            max_filter = ndimage.maximum_filter(smoothed_field, size=self.window_size)
-            local_maxima = (smoothed_field == max_filter) & (smoothed_field > self.vorticity_threshold)
-            
-            # Получаем координаты максимумов
-            maxima_indices = np.where(local_maxima)
-            
-            # Формируем список кандидатов
-            candidates = []
-            
-            for i in range(len(maxima_indices[0])):
-                lat_idx = maxima_indices[0][i]
-                lon_idx = maxima_indices[1][i]
+            # Find local maxima above threshold
+            try:
+                # Make sure smoothed_vorticity is 2D before finding local maxima
+                if smoothed_vorticity.ndim != 2:
+                    logger.warning(f"Smoothed vorticity has {smoothed_vorticity.ndim} dimensions, attempting to reduce to 2D")
+                    if smoothed_vorticity.ndim > 2:
+                        # Use the mean across extra dimensions or the first slice
+                        if smoothed_vorticity.size > 0:
+                            if smoothed_vorticity.shape[0] == 1:
+                                smoothed_vorticity = smoothed_vorticity[0]
+                            else:
+                                # Try to average across the first dimension
+                                smoothed_vorticity = np.mean(smoothed_vorticity, axis=0)
+                    else:
+                        # If it's 1D, can't use it for maxima detection
+                        logger.error("Cannot use 1D vorticity data for maxima detection")
+                        return []
                 
-                latitude = float(arctic_data.latitude.values[lat_idx])
-                longitude = float(arctic_data.longitude.values[lon_idx])
-                vorticity = float(smoothed_field[lat_idx, lon_idx])
+                max_filter = ndimage.maximum_filter(smoothed_vorticity, size=self.window_size)
+                vorticity_maxima = (smoothed_vorticity == max_filter) & (smoothed_vorticity > self.vorticity_threshold)
                 
-                # Создаем кандидата
-                candidate = {
-                    'latitude': latitude,
-                    'longitude': longitude,
-                    'vorticity': vorticity,
-                    'criterion': 'vorticity'
-                }
+                # Get coordinates of maxima
+                maxima_indices = np.where(vorticity_maxima)
                 
-                # Добавляем давление, если доступно
-                pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
-                for pvar in pressure_vars:
-                    if pvar in arctic_data:
-                        candidate['pressure'] = float(arctic_data[pvar].isel(
-                            latitude=lat_idx, longitude=lon_idx).values)
-                        break
+                candidates = []
                 
-                candidates.append(candidate)
-            
-            logger.debug(f"Критерий завихренности нашел {len(candidates)} кандидатов")
-            return candidates
-            
+                for i in range(len(maxima_indices[0])):
+                    lat_idx = maxima_indices[0][i]
+                    lon_idx = maxima_indices[1][i]
+                    
+                    if lat_idx < len(arctic_data.latitude) and lon_idx < len(arctic_data.longitude):
+                        latitude = float(arctic_data.latitude.values[lat_idx])
+                        longitude = float(arctic_data.longitude.values[lon_idx])
+                        vorticity_value = float(smoothed_vorticity[lat_idx, lon_idx])
+                        
+                        candidate = {
+                            'latitude': latitude,
+                            'longitude': longitude,
+                            'vorticity': vorticity_value,
+                            'criterion': 'vorticity'
+                        }
+                        
+                        candidates.append(candidate)
+                    else:
+                        logger.warning(f"Invalid vorticity maxima indices: lat_idx={lat_idx}, lon_idx={lon_idx}")
+                
+                logger.debug(f"Критерий завихренности нашел {len(candidates)} кандидатов")
+                return candidates
+            except Exception as e:
+                logger.error(f"Error finding vorticity maxima: {str(e)}")
+                return []
+                
         except Exception as e:
             error_msg = f"Ошибка при применении критерия завихренности: {str(e)}"
             logger.error(error_msg)

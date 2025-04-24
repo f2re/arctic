@@ -55,21 +55,23 @@ class CycloneDetector:
         
         logger.info(f"Инициализирован детектор циклонов с минимальной широтой {min_latitude}°N")
     
-    def _register_default_criteria(self) -> None:
+    def _register_default_criteria(self):
         """
-        Регистрирует стандартные критерии обнаружения циклонов.
+        Регистрирует стандартные критерии обнаружения в менеджере критериев.
         """
-        from .criteria.pressure import PressureMinimumCriterion
-        from .criteria.vorticity import VorticityCriterion
-        from .criteria.gradient import PressureGradientCriterion
-        from .criteria.closed_contour import ClosedContourCriterion
-        from .criteria.wind import WindThresholdCriterion
-        
-        self.criteria_manager.register_criterion("pressure_minimum", PressureMinimumCriterion())
-        self.criteria_manager.register_criterion("vorticity", VorticityCriterion())
-        self.criteria_manager.register_criterion("pressure_gradient", PressureGradientCriterion())
-        self.criteria_manager.register_criterion("closed_contour", ClosedContourCriterion())
-        self.criteria_manager.register_criterion("wind_threshold", WindThresholdCriterion())
+        from detection.criteria import (
+            PressureMinimumCriterion,
+            VorticityCriterion,
+            ClosedContourCriterion,
+            WindThresholdCriterion,
+            PressureLaplacianCriterion
+        )
+
+        self.criteria_manager.register_criterion('pressure_minimum', PressureMinimumCriterion)
+        self.criteria_manager.register_criterion('vorticity', VorticityCriterion)
+        self.criteria_manager.register_criterion('closed_contour', ClosedContourCriterion)
+        self.criteria_manager.register_criterion('wind_threshold', WindThresholdCriterion)
+        self.criteria_manager.register_criterion('pressure_laplacian', PressureLaplacianCriterion)
         
         # Настраиваем стандартную комбинацию критериев
         self.criteria_manager.set_active_criteria(["pressure_minimum", "vorticity"])
@@ -87,6 +89,9 @@ class CycloneDetector:
         criteria_config = self.config['detection']['criteria']
         active_criteria = []
         
+        # Сохраняем настройки критериев для использования при создании экземпляров
+        self.criteria_params = {}
+        
         # Проходим по всем критериям в конфигурации и добавляем активные
         for criterion_name, settings in criteria_config.items():
             if settings.get('enabled', False):
@@ -94,12 +99,11 @@ class CycloneDetector:
                 if criterion_name in self.criteria_manager.criteria:
                     active_criteria.append(criterion_name)
                     
-                    # Настраиваем параметры критерия, если они указаны
-                    criterion = self.criteria_manager.get_criterion(criterion_name)
-                    for param_name, value in settings.items():
-                        if param_name != 'enabled' and hasattr(criterion, param_name):
-                            setattr(criterion, param_name, value)
-                            logger.debug(f"Установлен параметр {param_name}={value} для критерия {criterion_name}")
+                    # Сохраняем параметры критерия для использования при создании экземпляра
+                    self.criteria_params[criterion_name] = {
+                        k: v for k, v in settings.items() if k != 'enabled'
+                    }
+                    logger.debug(f"Сохранены параметры для критерия {criterion_name}: {self.criteria_params[criterion_name]}")
                 else:
                     logger.warning(f"Критерий {criterion_name} указан в конфигурации, но не зарегистрирован")
         
@@ -181,26 +185,41 @@ class CycloneDetector:
             Список кандидатов в циклоны (словари с координатами и свойствами).
         """
         # Получаем активные критерии
-        active_criteria = self.criteria_manager.get_active_criteria()
+        active_criteria_names = self.criteria_manager.get_active_criterion_names()
+        active_criteria_classes = self.criteria_manager.get_active_criteria()
         
-        if not active_criteria:
+        if not active_criteria_classes:
             logger.warning("Не заданы активные критерии обнаружения, используется критерий минимума давления")
             from .criteria.pressure import PressureMinimumCriterion
-            active_criteria = [PressureMinimumCriterion()]
+            active_criteria_classes = [PressureMinimumCriterion]
+            active_criteria_names = ['pressure_minimum']
         
         # Применяем каждый критерий
         candidates_by_criterion = []
         
-        for criterion in active_criteria:
-            criterion_name = criterion.__class__.__name__
+        for i, criterion_class in enumerate(active_criteria_classes):
+            criterion_name = criterion_class.__name__
+            criterion_key = active_criteria_names[i] if i < len(active_criteria_names) else None
             logger.debug(f"Применение критерия: {criterion_name}")
             
             try:
+                # Prepare params for criterion instantiation
+                params = {'min_latitude': self.min_latitude}
+                
+                # Add parameters from config if available
+                if hasattr(self, 'criteria_params') and criterion_key in self.criteria_params:
+                    params.update(self.criteria_params[criterion_key])
+                    logger.debug(f"Применение параметров для {criterion_key}: {params}")
+                
+                # Instantiate the criterion with parameters
+                criterion = criterion_class(**params)
+                
+                # Apply the criterion with time_step parameter
                 candidates = criterion.apply(dataset, time_step)
                 candidates_by_criterion.append(candidates)
                 logger.debug(f"Критерий {criterion_name} нашел {len(candidates)} кандидатов")
             except Exception as e:
-                logger.warning(f"Ошибка при применении критерия {criterion_name}: {str(e)}")
+                logger.warning(f"Ошибка при применении критерия {criterion_class.__name__}: {str(e)}")
         
         # Фильтруем кандидатов, подходящих под все критерии
         if len(candidates_by_criterion) == 0:

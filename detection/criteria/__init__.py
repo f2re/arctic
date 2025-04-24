@@ -74,13 +74,13 @@ class CriteriaManager:
         
         logger.info("Initialized cyclone detection criteria manager")
     
-    def register_criterion(self, name: str, criterion: BaseCriterion) -> None:
+    def register_criterion(self, name: str, criterion_class) -> None:
         """
-        Registers a detection criterion.
+        Registers a new detection criterion.
         
         Arguments:
             name: Criterion name for registration.
-            criterion: Criterion instance.
+            criterion_class: Criterion class (not instance).
             
         Raises:
             ValueError: If a criterion with the same name is already registered.
@@ -88,7 +88,7 @@ class CriteriaManager:
         if name in self.criteria:
             raise ValueError(f"Criterion with name '{name}' is already registered")
             
-        self.criteria[name] = criterion
+        self.criteria[name] = criterion_class
         logger.info(f"Registered criterion: {name}")
     
     def unregister_criterion(self, name: str) -> None:
@@ -127,7 +127,7 @@ class CriteriaManager:
         if name not in self.criteria:
             raise ValueError(f"Criterion with name '{name}' is not registered")
             
-        return self.criteria[name]
+        return self.criteria[name]()
     
     def set_active_criteria(self, names: List[str]) -> None:
         """
@@ -147,14 +147,23 @@ class CriteriaManager:
         self.active_criteria = names
         logger.info(f"Set active criteria: {', '.join(names)}")
     
-    def get_active_criteria(self) -> List[BaseCriterion]:
+    def get_active_criteria(self) -> List:
         """
-        Returns a list of active criteria.
+        Returns a list of active criterion classes.
         
         Returns:
-            List of active criterion instances.
+            List of active criterion classes.
         """
         return [self.criteria[name] for name in self.active_criteria]
+    
+    def get_active_criterion_names(self) -> List[str]:
+        """
+        Returns a list of active criterion names.
+        
+        Returns:
+            List of active criterion names.
+        """
+        return self.active_criteria.copy()
     
     def apply_criteria(self, dataset: xr.Dataset, time_step: Any) -> Dict[str, List[Dict]]:
         """
@@ -170,7 +179,7 @@ class CriteriaManager:
         results = {}
         
         for name in self.active_criteria:
-            criterion = self.criteria[name]
+            criterion = self.criteria[name]()
             try:
                 candidates = criterion.apply(dataset, time_step)
                 results[name] = candidates
@@ -188,7 +197,7 @@ class CriteriaManager:
         Returns:
             Dictionary with criterion names and their descriptions.
         """
-        return {name: criterion.description for name, criterion in self.criteria.items()}
+        return {name: criterion.__doc__ or "Cyclone detection criterion" for name, criterion in self.criteria.items()}
 
 
 # Import concrete criteria
@@ -197,6 +206,7 @@ from .vorticity import VorticityCriterion
 from .gradient import PressureGradientCriterion
 from .closed_contour import ClosedContourCriterion
 from .wind import WindThresholdCriterion
+from .laplacian import PressureLaplacianCriterion
 
 __all__ = [
     'BaseCriterion',
@@ -205,5 +215,6 @@ __all__ = [
     'VorticityCriterion',
     'PressureGradientCriterion',
     'ClosedContourCriterion',
-    'WindThresholdCriterion'
+    'WindThresholdCriterion',
+    'PressureLaplacianCriterion'
 ]

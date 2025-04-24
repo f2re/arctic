@@ -13,6 +13,8 @@ import argparse
 import datetime
 import logging
 from pathlib import Path
+import xarray as xr
+import matplotlib.pyplot as plt
 
 from core.config import ConfigManager
 from core.logging_setup import setup_logging
@@ -21,7 +23,7 @@ from data.credentials import CredentialManager
 from detection.tracker import CycloneDetector, CycloneTracker
 from export.formats.csv_exporter import CycloneCSVExporter
 from visualization.tracks import plot_cyclone_tracks
-# from visualization.heatmaps import plot_cyclone_density
+from visualization.heatmaps import create_cyclone_frequency_map
 from visualization.parameters import plot_cyclone_parameters
 
 
@@ -120,22 +122,76 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     }
 
     
-    # Required meteorological parameters and pressure levels
-    parameters = {
-        'variables': ['z', 'u', 'v', 't', 'vo'],  # Geopotential, wind components, temperature, vorticity
-        'levels': [1000, 925, 850, 700, 500]      # Standard pressure levels in hPa
-    }
+    # Get parameters from config file
+    logger.info("Reading data parameters from config file")
+    data_config = config.get('data')
+    era5_config = data_config['sources']['ERA5']
+    
+    # Prepare parameters for two separate requests
+    pressure_level_vars = []
+    surface_vars = []
+    
+    # Variables from config
+    for var in era5_config.get('variables', []):
+        if var == 'msl' or var == 'mean_sea_level_pressure':
+            surface_vars.append(var)
+        else:
+            pressure_level_vars.append(var)
+    
+    # Levels from config
+    levels = era5_config.get('levels', [1000, 925, 850, 700, 500])
+    
+    logger.info(f"Configured pressure level variables: {pressure_level_vars}")
+    logger.info(f"Configured surface variables: {surface_vars}")
+    
+    # Combined dataset to store results
+    combined_dataset = None
     
     # Download data from ERA5
     logger.info(f"Downloading ERA5 data for period {start_date} to {end_date}")
     try:
-        dataset = data_manager.get_data(
-            source="ERA5",
-            parameters=parameters,
-            region=region,
-            timeframe=timeframe,
-            use_cache=True
-        )
+        # Get pressure level data if there are pressure level variables
+        if pressure_level_vars:
+            pressure_params = {
+                'dataset_type': 'pressure_levels',
+                'variables': pressure_level_vars,
+                'levels': levels
+            }
+            
+            logger.info("Downloading pressure level data...")
+            pressure_dataset = data_manager.get_data(
+                source="ERA5",
+                parameters=pressure_params,
+                region=region,
+                timeframe=timeframe,
+                use_cache=True
+            )
+            combined_dataset = pressure_dataset
+        
+        # Get surface data if there are surface variables
+        if surface_vars:
+            surface_params = {
+                'dataset_type': 'surface',
+                'variables': surface_vars
+            }
+            
+            logger.info("Downloading surface data...")
+            surface_dataset = data_manager.get_data(
+                source="ERA5",
+                parameters=surface_params,
+                region=region,
+                timeframe=timeframe,
+                use_cache=True
+            )
+            
+            # Merge with pressure level data if exists
+            if combined_dataset is not None:
+                combined_dataset = xr.merge([combined_dataset, surface_dataset])
+            else:
+                combined_dataset = surface_dataset
+        
+        # Use the combined dataset for further processing
+        dataset = combined_dataset
         
         # Проверка и преобразование координат времени
         if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
@@ -150,11 +206,17 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
         logger.error(f"Failed to download data: {str(e)}")
         return {"status": "error", "message": str(e)}
     
-    # Initialize cyclone detector
-    detector = CycloneDetector(min_latitude=70.0)
+    # Load detection configuration
+    detection_config = config.get('detection')
     
-    # Set detection criteria - using pressure minimum and vorticity for identification
-    detector.set_criteria(["pressure_minimum", "vorticity"])
+    # Initialize cyclone detector with configuration
+    min_latitude = detection_config['min_latitude'] if 'min_latitude' in detection_config else 70.0
+    
+    # Initialize detector with proper parameters
+    detector = CycloneDetector(min_latitude=min_latitude, 
+                              config=config.config)  # Pass the raw config dictionary
+    
+    # No need to explicitly set criteria - they are now read from config automatically
     
     # Detect cyclones for each time step
     logger.info("Detecting cyclones...")
@@ -212,9 +274,26 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     logger.info(f"Saved cyclone tracks plot to {tracks_file}")
     
     # Plot cyclone density heatmap
-    # heatmap_file = output_dir / "cyclone_density.png"
-    # plot_cyclone_density([c for track in filtered_tracks for c in track], region, heatmap_file)
-    # logger.info(f"Saved cyclone density heatmap to {heatmap_file}")
+    heatmap_file = output_dir / "cyclone_density.png"
+    try:
+        if filtered_tracks:
+            # Extract all cyclones from tracks
+            all_cyclones = [c for track in filtered_tracks for c in track]
+            # Create frequency map with proper parameters
+            fig, ax = create_cyclone_frequency_map(
+                cyclones=all_cyclones,
+                min_latitude=region['south'],
+                grid_resolution=1.0,
+                smoothing_sigma=1.5
+            )
+            # Save the figure to file
+            fig.savefig(heatmap_file, dpi=300, bbox_inches='tight')
+            plt.close(fig)  # Close the figure to free memory
+            logger.info(f"Saved cyclone density heatmap to {heatmap_file}")
+        else:
+            logger.warning("No cyclone tracks found, skipping density plot")
+    except Exception as e:
+        logger.error(f"Error generating cyclone density plot: {str(e)}")
     
     # Plot parameters for the most intense cyclone (lowest pressure)
     if filtered_tracks:

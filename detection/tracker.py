@@ -33,19 +33,25 @@ class CycloneDetector:
     с использованием гибкой системы критериев обнаружения.
     """
     
-    def __init__(self, min_latitude: float = 70.0):
+    def __init__(self, min_latitude: float = 70.0, config=None):
         """
         Инициализирует детектор циклонов с указанной минимальной широтой.
         
         Аргументы:
             min_latitude: Минимальная широта для Арктического региона (по умолчанию 70°N).
+            config: Конфигурация обнаружения циклонов из config.yaml
         """
         self.min_latitude = min_latitude
         self.criteria_manager = CriteriaManager()
         self.validator = DetectionValidator()
+        self.config = config
         
         # Регистрируем стандартные критерии обнаружения
         self._register_default_criteria()
+        
+        # Если конфигурация предоставлена, устанавливаем активные критерии из конфигурации
+        if self.config:
+            self._configure_criteria_from_config()
         
         logger.info(f"Инициализирован детектор циклонов с минимальной широтой {min_latitude}°N")
     
@@ -57,16 +63,52 @@ class CycloneDetector:
         from .criteria.vorticity import VorticityCriterion
         from .criteria.gradient import PressureGradientCriterion
         from .criteria.closed_contour import ClosedContourCriterion
+        from .criteria.wind import WindThresholdCriterion
         
         self.criteria_manager.register_criterion("pressure_minimum", PressureMinimumCriterion())
         self.criteria_manager.register_criterion("vorticity", VorticityCriterion())
         self.criteria_manager.register_criterion("pressure_gradient", PressureGradientCriterion())
         self.criteria_manager.register_criterion("closed_contour", ClosedContourCriterion())
+        self.criteria_manager.register_criterion("wind_threshold", WindThresholdCriterion())
         
         # Настраиваем стандартную комбинацию критериев
         self.criteria_manager.set_active_criteria(["pressure_minimum", "vorticity"])
         
         logger.info("Зарегистрированы стандартные критерии обнаружения циклонов")
+    
+    def _configure_criteria_from_config(self) -> None:
+        """
+        Устанавливает активные критерии обнаружения циклонов из конфигурации.
+        """
+        if not self.config or 'detection' not in self.config or 'criteria' not in self.config['detection']:
+            logger.warning("Конфигурация критериев не найдена, используем стандартные критерии")
+            return
+            
+        criteria_config = self.config['detection']['criteria']
+        active_criteria = []
+        
+        # Проходим по всем критериям в конфигурации и добавляем активные
+        for criterion_name, settings in criteria_config.items():
+            if settings.get('enabled', False):
+                # Проверяем, зарегистрирован ли критерий
+                if criterion_name in self.criteria_manager.criteria:
+                    active_criteria.append(criterion_name)
+                    
+                    # Настраиваем параметры критерия, если они указаны
+                    criterion = self.criteria_manager.get_criterion(criterion_name)
+                    for param_name, value in settings.items():
+                        if param_name != 'enabled' and hasattr(criterion, param_name):
+                            setattr(criterion, param_name, value)
+                            logger.debug(f"Установлен параметр {param_name}={value} для критерия {criterion_name}")
+                else:
+                    logger.warning(f"Критерий {criterion_name} указан в конфигурации, но не зарегистрирован")
+        
+        # Устанавливаем активные критерии
+        if active_criteria:
+            self.criteria_manager.set_active_criteria(active_criteria)
+            logger.info(f"Установлены активные критерии из конфигурации: {', '.join(active_criteria)}")
+        else:
+            logger.warning("В конфигурации не найдены активные критерии, используем стандартные")
     
     def detect(self, dataset: xr.Dataset, time_step: Optional[str] = None) -> List[Cyclone]:
         """

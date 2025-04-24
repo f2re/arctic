@@ -65,7 +65,7 @@ class PressureMinimumCriterion(BaseCriterion):
         """
         try:
             # Определяем переменную давления в наборе данных
-            pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
+            pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp','pressure_level']
             pressure_var = None
             
             for var in pressure_vars:
@@ -74,7 +74,9 @@ class PressureMinimumCriterion(BaseCriterion):
                     break
             
             if pressure_var is None:
-                raise ValueError("Не удается определить переменную давления в наборе данных")
+                available_vars = list(dataset.variables)
+                logger.error(f"Не удается определить переменную давления в наборе данных. Доступные переменные: {available_vars}")
+                raise ValueError(f"Не удается определить переменную давления в наборе данных. Доступные переменные: {available_vars}")
                 
             # Выбираем временной шаг и применяем маску региона
             time_data = dataset.sel(time=time_step)

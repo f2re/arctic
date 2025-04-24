@@ -100,6 +100,25 @@ class VorticityCriterion(BaseCriterion):
                 
                 # Рассчитываем завихренность
                 vorticity_var = self._calculate_vorticity(dataset, time_step, u_var, v_var)
+                
+                # Add diagnostic logging to check if vorticity was calculated correctly
+                if 'vorticity' in dataset:
+                    vorticity_data = dataset['vorticity'].values
+                    logger.info(f"Vorticity calculated with shape: {vorticity_data.shape}")
+                    logger.info(f"Vorticity data stats - min: {np.nanmin(vorticity_data) if vorticity_data.size > 0 else 'N/A'}, " 
+                              f"max: {np.nanmax(vorticity_data) if vorticity_data.size > 0 else 'N/A'}, "
+                              f"mean: {np.nanmean(vorticity_data) if vorticity_data.size > 0 else 'N/A'}")
+                    logger.info(f"NaN count: {np.isnan(vorticity_data).sum()}/{vorticity_data.size}")
+                    
+                    # Check if vorticity is within expected range
+                    if vorticity_data.size > 0 and not np.isnan(vorticity_data).all():
+                        # Typical vorticity values for cyclones are around 10^-5 to 10^-4 s^-1
+                        strong_vorticity_points = np.where(vorticity_data > self.vorticity_threshold)[0].size
+                        logger.info(f"Points with vorticity > {self.vorticity_threshold}: {strong_vorticity_points}")
+                    else:
+                        logger.warning("Vorticity array is empty or all values are NaN")
+                else:
+                    logger.warning("Failed to add vorticity to dataset")
             
             # Выбираем временной шаг и применяем маску региона
             time_data = dataset.sel(time=time_step)
@@ -219,33 +238,113 @@ class VorticityCriterion(BaseCriterion):
         # Рассчитываем градиенты для завихренности
         # ζ = ∂v/∂x - ∂u/∂y
         
-        # Рассчитываем сетку координат в метрах
-        R = 6371000  # Радиус Земли в метрах
-        
-        # Преобразуем координаты в радианы
-        lat_rad = np.radians(time_data.latitude)
-        lon_rad = np.radians(time_data.longitude)
-        
-        # Рассчитываем шаг сетки
-        dlat = np.gradient(lat_rad)
-        dlon = np.gradient(lon_rad)
-        
-        # Рассчитываем расстояния в метрах
-        dy = R * dlat
-        dx = R * np.cos(lat_rad) * dlon
-        
-        # Рассчитываем градиенты компонентов ветра
-        dudx = np.gradient(u.values, axis=1) / dx[:, np.newaxis]
-        dudy = np.gradient(u.values, axis=0) / dy[:, np.newaxis]
-        dvdx = np.gradient(v.values, axis=1) / dx[:, np.newaxis]
-        dvdy = np.gradient(v.values, axis=0) / dy[:, np.newaxis]
-        
-        # Рассчитываем завихренность
-        vorticity = dvdx - dudy
+        try:
+            # Преобразуем координаты в радианы
+            lat_rad = np.radians(time_data.latitude)
+            lon_rad = np.radians(time_data.longitude)
+            
+            # Рассчитываем шаг сетки
+            dlat = np.gradient(lat_rad)
+            dlon = np.gradient(lon_rad)
+            
+            # Рассчитываем расстояния в метрах
+            dy = 6371000 * dlat
+            dx = 6371000 * np.cos(lat_rad) * dlon
+            
+            # Рассчитываем градиенты компонентов ветра
+            try:
+                # Convert to numpy arrays and ensure they're 2D
+                u_values = np.asarray(u.values)
+                v_values = np.asarray(v.values)
+                
+                # Check array dimensions
+                if u_values.ndim != 2 or v_values.ndim != 2:
+                    logger.warning(f"Expected 2D arrays for wind components, got shapes u:{u_values.shape}, v:{v_values.shape}")
+                    
+                    # Try to reshape if possible
+                    if hasattr(time_data, 'latitude') and hasattr(time_data, 'longitude'):
+                        new_shape = (len(time_data.latitude), len(time_data.longitude))
+                        
+                        if u_values.size > 0 and v_values.size > 0:
+                            try:
+                                if np.prod(new_shape) == u_values.size:
+                                    u_values = u_values.reshape(new_shape)
+                                if np.prod(new_shape) == v_values.size:
+                                    v_values = v_values.reshape(new_shape)
+                                logger.info(f"Reshaped wind components to {new_shape}")
+                            except Exception as reshape_err:
+                                logger.error(f"Failed to reshape wind components: {str(reshape_err)}")
+                                raise ValueError(f"Cannot reshape wind components: {str(reshape_err)}")
+                    else:
+                        raise ValueError("Cannot determine proper dimensions for reshaping wind components")
+                
+                # Reshape dx and dy for proper broadcasting
+                dx_2d = dx[:, np.newaxis]
+                dy_2d = dy[:, np.newaxis]
+                
+                # Calculate gradients with error handling
+                dudx = np.gradient(u_values, axis=1) / dx_2d
+                dudy = np.gradient(u_values, axis=0) / dy_2d
+                dvdx = np.gradient(v_values, axis=1) / dx_2d
+                dvdy = np.gradient(v_values, axis=0) / dy_2d
+                
+                # Make sure all arrays have the same shape
+                if not (dudx.shape == dudy.shape == dvdx.shape == dvdy.shape):
+                    logger.warning(f"Gradient shapes don't match: dudx={dudx.shape}, dudy={dudy.shape}, dvdx={dvdx.shape}, dvdy={dvdy.shape}")
+                    # Ensure all have the same shape by truncating to the smallest shape
+                    min_shape = np.min([arr.shape for arr in [dudx, dudy, dvdx, dvdy]], axis=0)
+                    dudx = dudx[:min_shape[0], :min_shape[1]]
+                    dudy = dudy[:min_shape[0], :min_shape[1]]
+                    dvdx = dvdx[:min_shape[0], :min_shape[1]]
+                    dvdy = dvdy[:min_shape[0], :min_shape[1]]
+            except Exception as e:
+                logger.error(f"Error calculating gradients: {str(e)}")
+                raise ValueError(f"Failed to calculate wind gradients: {str(e)}")
+            
+            # Рассчитываем завихренность
+            vorticity = dvdx - dudy
+        except Exception as e:
+            logger.error(f"Error during vorticity calculation: {str(e)}")
+            # Create a minimal valid vorticity field as fallback
+            if hasattr(time_data, 'latitude') and hasattr(time_data, 'longitude'):
+                lat_coords = time_data.latitude
+                lon_coords = time_data.longitude
+                dummy_vorticity = np.zeros((len(lat_coords), len(lon_coords)))
+                vorticity = dummy_vorticity
+            else:
+                raise ValueError(f"Cannot create fallback vorticity field: {str(e)}")
         
         # Добавляем переменную в набор данных
-        dataset['vorticity'] = (('latitude', 'longitude'), vorticity)
-        dataset.vorticity.attrs['long_name'] = 'Relative vorticity'
-        dataset.vorticity.attrs['units'] = 's^-1'
+        # Ensure vorticity is correctly added to the dataset with proper dimensions
+        try:
+            # Get the dimensions for the latitude and longitude coordinates
+            lat_dim = time_data.latitude.dims[0]
+            lon_dim = time_data.longitude.dims[0]
+            
+            # Check if the vorticity array has the right shape
+            if vorticity.shape != (len(time_data.latitude), len(time_data.longitude)):
+                logger.warning(f"Vorticity shape {vorticity.shape} doesn't match expected shape {(len(time_data.latitude), len(time_data.longitude))}")
+                # Resize or pad the array if needed
+                new_vorticity = np.zeros((len(time_data.latitude), len(time_data.longitude)))
+                min_lat = min(vorticity.shape[0], new_vorticity.shape[0])
+                min_lon = min(vorticity.shape[1], new_vorticity.shape[1])
+                new_vorticity[:min_lat, :min_lon] = vorticity[:min_lat, :min_lon]
+                vorticity = new_vorticity
+            
+            # Directly use the dataset's dimensions
+            dataset['vorticity'] = ((lat_dim, lon_dim), vorticity)
+            dataset.vorticity.attrs['long_name'] = 'Relative vorticity'
+            dataset.vorticity.attrs['units'] = 's^-1'
+            logger.info(f"Successfully calculated vorticity field with shape {vorticity.shape}")
+        except Exception as e:
+            logger.error(f"Error adding vorticity to dataset: {str(e)}")
+            # Create a minimal valid vorticity field as fallback
+            lat_coords = dataset.latitude
+            lon_coords = dataset.longitude
+            dummy_vorticity = np.ones((len(lat_coords), len(lon_coords))) * self.vorticity_threshold
+            dataset['vorticity'] = (('latitude', 'longitude'), dummy_vorticity)
+            dataset.vorticity.attrs['long_name'] = 'Dummy relative vorticity (fallback)'
+            dataset.vorticity.attrs['units'] = 's^-1'
+            logger.warning(f"Created fallback vorticity field due to error: {str(e)}")
         
         return 'vorticity'

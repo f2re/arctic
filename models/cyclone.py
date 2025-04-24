@@ -214,47 +214,19 @@ class Cyclone:
         vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
         vorticity_var = None
         
+        # Add diagnostics about available variables in the region dataset
+        logger.debug(f"Available variables in region dataset: {list(region.variables)}")
+        logger.debug(f"Region dataset dimensions: {region.dims}")
+        
         for var in vorticity_vars:
             if var in region:
                 vorticity_var = var
+                logger.debug(f"Found vorticity variable: {var}")
                 break
         
         if vorticity_var is None:
-            # Проверяем наличие компонентов ветра для расчета завихренности
-            if ('u' in region or 'u_component_of_wind' in region) and \
-               ('v' in region or 'v_component_of_wind' in region):
-                
-                # Получаем компоненты ветра
-                u_var = 'u' if 'u' in region else 'u_component_of_wind'
-                v_var = 'v' if 'v' in region else 'v_component_of_wind'
-                
-                # Проверяем наличие уровней давления
-                if 'level' in region.dims:
-                    # Ищем уровень 850 гПа или ближайший
-                    levels = region.level.values
-                    level_850 = min(levels, key=lambda x: abs(x - 850))
-                    
-                    u = region[u_var].sel(level=level_850)
-                    v = region[v_var].sel(level=level_850)
-                else:
-                    u = region[u_var]
-                    v = region[v_var]
-                
-                # Рассчитываем завихренность
-                dx = region.longitude.diff('longitude') * 111000 * np.cos(np.radians(region.latitude))
-                dy = region.latitude.diff('latitude') * 111000
-                
-                dudy = u.differentiate('latitude') / dy
-                dvdx = v.differentiate('longitude') / dx
-                
-                vorticity = dvdx - dudy
-                
-                # Находим максимальное значение
-                max_vorticity = float(vorticity.max().values)
-                
-                return max_vorticity
-            else:
-                return None
+            logger.warning("No vorticity variable found in region dataset")
+            return None
         
         # Если переменная завихренности есть, используем ее
         if 'level' in region.dims and vorticity_var in region:
@@ -267,9 +239,23 @@ class Cyclone:
             vorticity = region[vorticity_var]
         
         # Находим максимальное значение
-        max_vorticity = float(vorticity.max().values)
-        
-        return max_vorticity
+        try:
+            # Check if the array is empty before trying to find the max
+            if vorticity.size == 0:
+                logger.warning("Empty vorticity array, cannot calculate maximum")
+                return None
+            
+            # Check if we got NaN values
+            if np.isnan(vorticity).all():
+                logger.warning("All vorticity values are NaN, cannot calculate maximum")
+                return None
+                
+            # Use np.nanmax to ignore NaN values
+            max_vorticity = float(np.nanmax(vorticity.values))
+            return max_vorticity
+        except Exception as e:
+            logger.warning(f"Error calculating max vorticity: {str(e)}")
+            return None
     
     def _calculate_max_wind_speed(self, region: xr.Dataset) -> Optional[float]:
         """

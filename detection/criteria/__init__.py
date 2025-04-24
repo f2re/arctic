@@ -196,6 +196,7 @@ from .pressure import PressureMinimumCriterion
 from .vorticity import VorticityCriterion
 from .gradient import PressureGradientCriterion
 from .closed_contour import ClosedContourCriterion
+from .wind import WindThresholdCriterion
 
 __all__ = [
     'BaseCriterion',
@@ -203,5 +204,6 @@ __all__ = [
     'PressureMinimumCriterion',
     'VorticityCriterion',
     'PressureGradientCriterion',
-    'ClosedContourCriterion'
+    'ClosedContourCriterion',
+    'WindThresholdCriterion'
 ]

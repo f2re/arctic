@@ -14,7 +14,7 @@ import logging
 import os
 
 from core.exceptions import DataSourceError, CredentialError
-from data.acquisition import BaseDataAdapter
+from data.base import BaseDataAdapter
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -35,7 +35,8 @@ class ERA5Adapter(BaseDataAdapter):
             cache_dir: Директория для кэширования данных.
         """
         super().__init__(cache_dir)
-        self.base_url = "https://cds.climate.copernicus.eu/api/v2"
+        # Updated API URL to the standard CDS endpoint without /api/v2
+        self.base_url = "https://cds.climate.copernicus.eu"
         self.available_datasets = {
             "pressure_levels": "reanalysis-era5-pressure-levels",
             "surface": "reanalysis-era5-single-levels",
@@ -76,12 +77,26 @@ class ERA5Adapter(BaseDataAdapter):
             if dataset_type not in self.available_datasets:
                 raise ValueError(f"Неизвестный тип данных ERA5: {dataset_type}")
             
+            # Проверяем, что переменные соответствуют типу данных
+            if dataset_type == 'surface':
+                # Проверка переменных для single-levels (surface)
+                for var in parameters.get('variables', []):
+                    if var in ['z', 'u', 'v', 't', 'q', 'vo', 'd', 'r']:
+                        logger.warning(f"Переменная '{var}' является переменной уровня давления, но запрашивается как поверхностная. Это может привести к ошибке.")
+            
+            if dataset_type == 'pressure_levels':
+                # Проверка переменных для pressure-levels
+                for var in parameters.get('variables', []):
+                    if var in ['msl', 'sp', 'tp', '2t', '10u', '10v', 'skt', 'tcc', 'blh']:
+                        logger.warning(f"Переменная '{var}' является поверхностной, но запрашивается на уровнях давления. Это может привести к ошибке.")
+            
             # Импортируем CDS API
             import cdsapi
             
             logger.info(f"Инициализация клиента CDS API для получения данных ERA5 ({dataset_type})")
-            client = cdsapi.Client(url=credentials.get('url', self.base_url), 
-                                 key=credentials.get('api_key'))
+            # Let the cdsapi module use default URL configuration from ~/.cdsapirc
+            # Just pass the API key and let the library handle proper URL construction
+            client = cdsapi.Client(key=credentials.get('api_key'))
             
             # Подготовка параметров запроса в соответствии с типом данных
             request_params = self._prepare_request_params(parameters, region, timeframe, dataset_type)
@@ -90,7 +105,18 @@ class ERA5Adapter(BaseDataAdapter):
             temp_file = self.cache_dir / f"temp_era5_{dataset_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}.nc"
             
             logger.info(f"Запрос данных ERA5 ({dataset_type}): {request_params}")
-            client.retrieve(self.available_datasets[dataset_type], request_params, temp_file)
+            
+            # Get the correct dataset name for the API
+            dataset_name = self.available_datasets[dataset_type]
+            
+            # Double-check and remove 'levtype': 'pl' for surface data
+            if dataset_type == 'surface':
+                # This is the most important fix - ensure surface vars don't use pressure levels
+                if 'levtype' in request_params and request_params['levtype'] != 'sfc':
+                    logger.warning(f"Correcting level type for surface data request")
+                    request_params['levtype'] = 'sfc'
+            
+            client.retrieve(dataset_name, request_params, temp_file)
             
             logger.info(f"Данные успешно загружены: {temp_file}")
             dataset = xr.open_dataset(temp_file)
@@ -112,11 +138,6 @@ class ERA5Adapter(BaseDataAdapter):
             dataset.attrs['request_parameters'] = str(request_params)
             
             return dataset
-            
-        except cdsapi.api.Exception as e:
-            error_msg = f"Ошибка API CDS при получении данных ERA5: {str(e)}"
-            logger.error(error_msg)
-            raise DataSourceError(error_msg)
             
         except CredentialError as e:
             logger.error(f"Ошибка аутентификации ERA5: {str(e)}")
@@ -154,17 +175,19 @@ class ERA5Adapter(BaseDataAdapter):
                 region.get('south', -90), 
                 region.get('east', 180)
             ],
+            'product_type': 'reanalysis',
         }
         
         # Добавляем специфические параметры в зависимости от типа данных
         if dataset_type == 'pressure_levels':
             request_params['variable'] = parameters.get('variables', [])
             request_params['pressure_level'] = parameters.get('levels', [])
-            request_params['product_type'] = 'reanalysis'
             
         elif dataset_type == 'surface':
             request_params['variable'] = parameters.get('variables', [])
-            request_params['product_type'] = 'reanalysis'
+            # Fixed: Set correct level type for surface data
+            # This is the critical fix - ERA5 API requires this
+            request_params['levtype'] = 'sfc'
             
         elif dataset_type == 'land':
             request_params['variable'] = parameters.get('variables', [])

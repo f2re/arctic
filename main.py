@@ -217,6 +217,8 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
                               config=config.config)  # Pass the raw config dictionary
     
     # No need to explicitly set criteria - they are now read from config automatically
+    diagnostic_dir = Path(output_dir) / "diagnostics"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
     
     # Detect cyclones for each time step
     logger.info("Detecting cyclones...")

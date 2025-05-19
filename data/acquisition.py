@@ -237,7 +237,7 @@ class DataPreprocessor:
         
         return interpolated
     
-    def filter_polar_region(self, min_latitude: float = 70.0) -> xr.Dataset:
+    def filter_polar_region(self, min_latitude: float = 65.0) -> xr.Dataset:
         """
         Фильтрует данные для полярного региона.
         

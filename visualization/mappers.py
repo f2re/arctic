@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patheffects as patheffects
 import matplotlib.ticker as mticker
+import matplotlib.path as mpath
 import numpy as np
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -35,7 +36,7 @@ class MapManager:
     
     def __init__(self, central_longitude: float = 0.0, 
                 min_latitude: float = 60.0,
-                resolution: str = 'intermediate',
+                resolution: str = '50m',
                 map_projection: str = 'NorthPolarStereo',
                 feature_set: List[str] = None):
         """
@@ -44,7 +45,7 @@ class MapManager:
         Аргументы:
             central_longitude: Центральная долгота проекции (градусы).
             min_latitude: Минимальная широта для визуализации (градусы с.ш.).
-            resolution: Разрешение географических данных ('low', 'intermediate', 'high').
+            resolution: Разрешение географических данных ('low', 'intermediate', 'high', '50m').
             map_projection: Тип проекции карты ('NorthPolarStereo', 'PlateCarree', 'LambertConformal').
             feature_set: Список географических объектов для отображения.
         """
@@ -70,13 +71,13 @@ class MapManager:
         
         # Словарь географических объектов
         self.features = {
-            'coastline': cfeature.COASTLINE.with_scale(resolution),
-            'borders': cfeature.BORDERS.with_scale(resolution),
-            'lakes': cfeature.LAKES.with_scale(resolution),
-            'rivers': cfeature.RIVERS.with_scale(resolution),
-            'land': cfeature.LAND.with_scale(resolution),
-            'ocean': cfeature.OCEAN.with_scale(resolution),
-            'states': cfeature.STATES.with_scale(resolution)
+            'coastline': cfeature.COASTLINE.with_scale(self.resolution),
+            'borders': cfeature.BORDERS.with_scale(self.resolution),
+            'lakes': cfeature.LAKES.with_scale(self.resolution),
+            'rivers': cfeature.RIVERS.with_scale(self.resolution),
+            'land': cfeature.LAND.with_scale(self.resolution),
+            'ocean': cfeature.OCEAN.with_scale(self.resolution),
+            'states': cfeature.STATES.with_scale(self.resolution)
         }
         
         # Цветовая схема для объектов по умолчанию
@@ -163,27 +164,43 @@ class MapManager:
         """
         if projection in ['PlateCarree', 'LambertConformal']:
             # Стандартные линии сетки для нормальных проекций
-            gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
-                            linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+            gl = ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
             gl.top_labels = False
             gl.right_labels = False
             gl.xformatter = LONGITUDE_FORMATTER
             gl.yformatter = LATITUDE_FORMATTER
-        else:
-            # Круговые линии сетки для полярных проекций
-            theta = np.linspace(0, 2*np.pi, 100)
-            center, radius = [0.5, 0.5], 0.5
-            verts = np.vstack([np.sin(theta), np.cos(theta)]).T
-            circle = mpl.path.Path(verts * radius + center)
+            gl.xlabel_style = {'size': 8, 'color': 'gray'}
+            gl.ylabel_style = {'size': 8, 'color': 'gray'}
+        elif projection == 'NorthPolarStereo':
+            # For polar projection, draw circular gridlines and custom labels
+            gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True, 
+                         linewidth=0.5, color='gray', alpha=0.5, linestyle=':')
+            gl.top_labels = False
+            gl.right_labels = False
+            gl.xformatter = LONGITUDE_FORMATTER
+            gl.yformatter = LATITUDE_FORMATTER
+            gl.xlabel_style = {'size': 8, 'color': 'gray'}
+            gl.ylabel_style = {'size': 8, 'color': 'gray'}
+
+            # Define positions for longitude and latitude lines
+            lat_lines = list(range(int(self.min_latitude), 90, 10))
+            lon_lines = list(range(-180, 180, 30))
+            gl.ylocator = mticker.FixedLocator(lat_lines)
+            gl.xlocator = mticker.FixedLocator(lon_lines)
             
-            for lat in range(int(self.min_latitude), 90, 10):
-                ax.gridlines(ccrs.PlateCarree(), ylimits=(lat, lat),
-                            linewidth=0.5, color='gray', alpha=0.5, linestyle=':')
+            # The set_boundary part was fine, re-adding it if it was removed by mistake in previous diffs
+            # It's important for clipping the map to a circle in polar projections.
+            num_pts = 100
+            verts = np.concatenate([
+                np.linspace(0, 2*np.pi, num_pts, endpoint=False).reshape(num_pts,1),
+                np.ones((num_pts,1))
+            ], axis=1)
+            # Path is defined in axes coordinates (0 to 1 for x and y)
+            # Center of the path should be (0.5, 0.5) with radius 0.5 to fill the axes
+            circle_path_in_axes_coords = mpath.Path(verts * 0.5 + [0.5, 0.5])
+            ax.set_boundary(circle_path_in_axes_coords, transform=ax.transAxes)
             
-            # Добавляем линии долготы
-            for lon in range(-180, 180, 30):
-                ax.gridlines(ccrs.PlateCarree(), xlimits=(lon, lon),
-                            linewidth=0.5, color='gray', alpha=0.5, linestyle=':')
+            # Remove the individual ax.gridlines calls for lat/lon as gl handles it with locators
     
     def set_map_features(self, feature_set: List[str]) -> None:
         """
@@ -217,7 +234,7 @@ def create_arctic_map(central_longitude: float = 0.0,
                     min_latitude: float = 60.0, 
                     figsize: Tuple[float, float] = (10, 8),
                     projection: str = 'NorthPolarStereo',
-                    resolution: str = 'intermediate',
+                    resolution: str = '50m',
                     features: List[str] = None) -> Tuple[plt.Figure, plt.Axes]:
     """
     Создает карту арктического региона.
@@ -299,7 +316,7 @@ def set_map_projection(ax: plt.Axes, projection: str,
 
 
 def add_map_features(ax: plt.Axes, features: List[str], 
-                   resolution: str = 'intermediate',
+                   resolution: str = '50m',
                    colors: Dict[str, str] = None) -> None:
     """
     Добавляет географические объекты на карту.

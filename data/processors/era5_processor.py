@@ -62,7 +62,7 @@ class ERA5Processor:
         else:
             logger.warning("Набор данных не содержит атрибута source='ERA5'")
             
-    def extract_polar_region(self, min_latitude: float = 70.0) -> xr.Dataset:
+    def extract_polar_region(self, min_latitude: float = 65.0) -> xr.Dataset:
         """
         Извлекает данные для полярного региона.
         
@@ -420,7 +420,7 @@ class ERA5Processor:
         return result
     
     def detect_cyclone_centers(self, 
-                              min_latitude: float = 70.0,
+                              min_latitude: float = 65.0,
                               slp_var: str = None,
                               min_slp_gradient: float = 0.5,  # гПа/100км
                               min_vorticity: float = 1e-5,  # с^-1

@@ -15,6 +15,7 @@ from scipy import signal
 
 from . import BaseCriterion
 from core.exceptions import DetectionError
+from visualization.criteria import plot_laplacian_field
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -52,13 +53,15 @@ class PressureLaplacianCriterion(BaseCriterion):
                     f"window_size={window_size}, "
                     f"smooth_sigma={smooth_sigma}")
     
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Применяет критерий к набору данных.
         
         Аргументы:
             dataset: Набор метеорологических данных xarray.
             time_step: Временной шаг для анализа.
+            debug_plot: Если True, включает построение графиков полей критериев для отладки.
+            output_dir: Каталог для сохранения графиков, если debug_plot=True.
             
         Возвращает:
             Список кандидатов в циклоны (словари с координатами и свойствами).
@@ -100,9 +103,19 @@ class PressureLaplacianCriterion(BaseCriterion):
             # Рассчитываем расстояния в километрах
             R = 6371.0  # Радиус Земли в километрах
             
-            # Создаем сетку расстояний
-            dlat_km = R * np.gradient(lat_rad)  # Шаг по широте в км
-            dlon_km = R * np.cos(lat_rad) * np.gradient(lon_rad)  # Шаг по долготе в км
+            # Получаем размеры сетки
+            logger.debug(f"Размеры сетки: lat={len(lat_rad)}, lon={len(lon_rad)}")
+            
+            # Создаем сетку расстояний с учетом размерности
+            # Используем скалярные значения для упрощения расчетов
+            dlat = np.abs(np.mean(np.gradient(lat_rad)))  # Средний шаг по широте в радианах
+            dlon = np.abs(np.mean(np.gradient(lon_rad)))  # Средний шаг по долготе в радианах
+            
+            # Переводим в километры
+            dlat_km = R * dlat  # Шаг по широте в км
+            dlon_km = R * np.mean(np.cos(lat_rad)) * dlon  # Шаг по долготе в км
+            
+            logger.debug(f"Шаг сетки: dlat_km={dlat_km}, dlon_km={dlon_km}")
             
             # Получаем значения давления в Паскалях (1 гПа = 100 Па)
             try:
@@ -117,14 +130,37 @@ class PressureLaplacianCriterion(BaseCriterion):
                 # ∇²p = ∂²p/∂x² + ∂²p/∂y²
                 
                 # Рассчитываем вторые производные
-                d2p_dy2 = np.gradient(np.gradient(pressure_values, axis=0, edge_order=2), axis=0, edge_order=2) / (dlat_km**2)[:, np.newaxis]
-                d2p_dx2 = np.gradient(np.gradient(pressure_values, axis=1, edge_order=2), axis=1, edge_order=2) / (dlon_km**2)[:, np.newaxis]
+                # Рассчитываем вторые производные с учетом шага сетки
+                # Используем скалярные значения шагов, которые уже рассчитаны выше
+                # Убедимся, что dlat_km и dlon_km - скалярные значения
+                dlat_km_scalar = float(dlat_km)
+                dlon_km_scalar = float(dlon_km)
                 
-                # Суммируем для получения лапласиана
-                laplacian = d2p_dy2 + d2p_dx2
+                # Вычисляем вторые производные
+                d2p_dy2 = np.gradient(np.gradient(pressure_values, axis=0, edge_order=2), axis=0, edge_order=2) / (dlat_km_scalar**2)
+                d2p_dx2 = np.gradient(np.gradient(pressure_values, axis=1, edge_order=2), axis=1, edge_order=2) / (dlon_km_scalar**2)
+                
+                # Суммируем для получения лапласиана и убедимся, что результат - numpy массив
+                laplacian = np.array(d2p_dy2 + d2p_dx2)
                 
                 # Лапласиан в Па/км²
                 # Положительные значения соответствуют циклонам (минимумам давления)
+
+                if debug_plot and output_dir:
+                    try:
+                        # Ensure lats and lons are 2D for plotting if they are 1D
+                        plot_lons, plot_lats = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
+                        plot_laplacian_field(
+                            laplacian=laplacian, 
+                            lats=plot_lats, 
+                            lons=plot_lons,
+                            threshold=self.laplacian_threshold,
+                            time_step=time_step,
+                            output_dir=output_dir
+                        )
+                        logger.debug(f"Saved pressure_laplacian plot for {time_step} to {output_dir}")
+                    except Exception as plot_e:
+                        logger.error(f"Error plotting pressure_laplacian field for {time_step}: {plot_e}")
                 
                 # Находим локальные максимумы лапласиана
                 max_filter = ndimage.maximum_filter(laplacian, size=self.window_size)

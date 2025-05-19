@@ -24,7 +24,7 @@ class BaseDetectionAlgorithm(ABC):
     Определяет интерфейс и общую функциональность для алгоритмов обнаружения.
     """
     
-    def __init__(self, min_latitude: float = 70.0,
+    def __init__(self, min_latitude: float = 65.0,
                 smooth_data: bool = True,
                 name: Optional[str] = None,
                 description: Optional[str] = None):

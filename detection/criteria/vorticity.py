@@ -13,6 +13,7 @@ import scipy.ndimage as ndimage
 
 from . import BaseCriterion
 from core.exceptions import DetectionError
+from visualization.criteria import plot_vorticity_field
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -53,13 +54,15 @@ class VorticityCriterion(BaseCriterion):
                     f"window_size={window_size}, "
                     f"smooth_sigma={smooth_sigma}")
     
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Применяет критерий к набору данных.
         
         Аргументы:
             dataset: Набор метеорологических данных xarray.
             time_step: Временной шаг для анализа.
+            debug_plot: Если True, включает построение графиков полей критериев для отладки.
+            output_dir: Каталог для сохранения графиков, если debug_plot=True.
             
         Возвращает:
             Список кандидатов в циклоны (словари с координатами и свойствами).
@@ -138,49 +141,51 @@ class VorticityCriterion(BaseCriterion):
                 vorticity_data = arctic_data[vorticity_var]
             
             # Apply a threshold to identify areas with high vorticity
+            relative_vorticity_values = vorticity_data.values
+            
+            # Apply smoothing if specified
             if self.smooth_sigma > 0:
+                relative_vorticity_values = ndimage.gaussian_filter(relative_vorticity_values, sigma=self.smooth_sigma)
+
+            if debug_plot and output_dir:
                 try:
-                    # Make sure we have a 2D array for smoothing
-                    vort_values = vorticity_data.values
-                    if vort_values.ndim > 2:
-                        logger.warning(f"Vorticity data has shape {vort_values.shape}, flattening extra dimensions")
-                        # If we have more than 2 dimensions, flatten all but lat/lon
-                        if hasattr(vorticity_data, 'latitude') and hasattr(vorticity_data, 'longitude'):
-                            # Reshape to (lat, lon) if those are the last two dimensions
-                            if vort_values.shape[-2:] == (len(arctic_data.latitude), len(arctic_data.longitude)):
-                                vort_values = vort_values.reshape(-1, *vort_values.shape[-2:])[-1]
-                            else:
-                                # Try other reshaping approaches
-                                vort_values = vort_values.mean(axis=tuple(range(vort_values.ndim - 2)))
-                    
-                    # Apply Gaussian smoothing
-                    smoothed_vorticity = ndimage.gaussian_filter(vort_values, sigma=self.smooth_sigma)
-                except Exception as e:
-                    logger.warning(f"Error during vorticity smoothing: {str(e)}")
-                    smoothed_vorticity = vorticity_data.values
-            else:
-                smoothed_vorticity = vorticity_data.values
+                    # Ensure lats and lons are 2D for plotting
+                    plot_lons, plot_lats = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
+                    plot_vorticity_field(
+                        vorticity=relative_vorticity_values, # Pass the (potentially smoothed) vorticity field
+                        lats=plot_lats, 
+                        lons=plot_lons,
+                        threshold=self.vorticity_threshold, # Pass the threshold used for detection
+                        time_step=time_step,
+                        output_dir=output_dir
+                    )
+                    logger.debug(f"Saved vorticity_criterion plot for {time_step} to {output_dir}")
+                except Exception as plot_e:
+                    logger.error(f"Error plotting vorticity_criterion field for {time_step}: {plot_e}")
+
+            # Находим области с высокой относительной завихренностью
+            high_vorticity_areas = (relative_vorticity_values >= self.vorticity_threshold)
             
             # Find local maxima above threshold
             try:
                 # Make sure smoothed_vorticity is 2D before finding local maxima
-                if smoothed_vorticity.ndim != 2:
-                    logger.warning(f"Smoothed vorticity has {smoothed_vorticity.ndim} dimensions, attempting to reduce to 2D")
-                    if smoothed_vorticity.ndim > 2:
+                if relative_vorticity_values.ndim != 2:
+                    logger.warning(f"Smoothed vorticity has {relative_vorticity_values.ndim} dimensions, attempting to reduce to 2D")
+                    if relative_vorticity_values.ndim > 2:
                         # Use the mean across extra dimensions or the first slice
-                        if smoothed_vorticity.size > 0:
-                            if smoothed_vorticity.shape[0] == 1:
-                                smoothed_vorticity = smoothed_vorticity[0]
+                        if relative_vorticity_values.size > 0:
+                            if relative_vorticity_values.shape[0] == 1:
+                                relative_vorticity_values = relative_vorticity_values[0]
                             else:
                                 # Try to average across the first dimension
-                                smoothed_vorticity = np.mean(smoothed_vorticity, axis=0)
+                                relative_vorticity_values = np.mean(relative_vorticity_values, axis=0)
                     else:
                         # If it's 1D, can't use it for maxima detection
                         logger.error("Cannot use 1D vorticity data for maxima detection")
                         return []
                 
-                max_filter = ndimage.maximum_filter(smoothed_vorticity, size=self.window_size)
-                vorticity_maxima = (smoothed_vorticity == max_filter) & (smoothed_vorticity > self.vorticity_threshold)
+                max_filter = ndimage.maximum_filter(relative_vorticity_values, size=self.window_size)
+                vorticity_maxima = (relative_vorticity_values == max_filter) & (relative_vorticity_values > self.vorticity_threshold)
                 
                 # Get coordinates of maxima
                 maxima_indices = np.where(vorticity_maxima)
@@ -194,7 +199,7 @@ class VorticityCriterion(BaseCriterion):
                     if lat_idx < len(arctic_data.latitude) and lon_idx < len(arctic_data.longitude):
                         latitude = float(arctic_data.latitude.values[lat_idx])
                         longitude = float(arctic_data.longitude.values[lon_idx])
-                        vorticity_value = float(smoothed_vorticity[lat_idx, lon_idx])
+                        vorticity_value = float(relative_vorticity_values[lat_idx, lon_idx])
                         
                         candidate = {
                             'latitude': latitude,

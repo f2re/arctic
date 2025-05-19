@@ -373,6 +373,9 @@ def plot_multiple_tracks(tracks: List[List[Cyclone]],
             ax.legend(handles=legend_elements, loc='lower right', 
                     title='Сезон')
         
+        # Initialize colors variable before first usage
+        colors = plt.cm.tab20(np.linspace(0, 1, min(20, len(tracks))))
+        
         # Отображаем каждый трек
         for i, track in enumerate(tracks):
             if not track:

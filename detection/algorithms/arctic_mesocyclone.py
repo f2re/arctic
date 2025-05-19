@@ -26,7 +26,7 @@ class ArcticMesocycloneAlgorithm(BaseDetectionAlgorithm):
     большую интенсивность завихренности, быстрое развитие и др.
     """
     
-    def __init__(self, min_latitude: float = 70.0,
+    def __init__(self, min_latitude: float = 65.0,
                 max_diameter: float = 1000.0,  # км
                 min_vorticity: float = 2e-5,  # 1/с
                 min_pressure_anomaly: float = 2.0,  # гПа

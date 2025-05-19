@@ -13,6 +13,7 @@ import scipy.ndimage as ndimage
 
 from . import BaseCriterion
 from core.exceptions import DetectionError
+from visualization.criteria import plot_wind_field
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -53,13 +54,15 @@ class WindThresholdCriterion(BaseCriterion):
                     f"window_size={window_size}, "
                     f"smooth_sigma={smooth_sigma}")
     
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Применяет критерий к набору данных.
         
         Аргументы:
             dataset: Набор метеорологических данных xarray.
             time_step: Временной шаг для анализа.
+            debug_plot: Если True, включает построение графиков полей критериев для отладки.
+            output_dir: Каталог для сохранения графиков, если debug_plot=True.
             
         Возвращает:
             Список кандидатов в циклоны (словари с координатами и свойствами).
@@ -178,11 +181,57 @@ class WindThresholdCriterion(BaseCriterion):
                         return []
                 
                 max_filter = ndimage.maximum_filter(smoothed_field, size=self.window_size)
-                high_wind_areas = (smoothed_field == max_filter) & (smoothed_field > self.min_speed)
+                wind_speed_maxima = (smoothed_field == max_filter) & (smoothed_field >= self.min_speed)
                 
-                # Получаем координаты максимумов
-                maxima_indices = np.where(high_wind_areas)
-                
+                maxima_indices = np.where(wind_speed_maxima)
+
+                if debug_plot and output_dir:
+                    try:
+                        # Ensure lats and lons are 2D for plotting
+                        plot_lons, plot_lats = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
+                        
+                        # Ensure u_data and v_data match the shape of plot_lats and plot_lons
+                        # If they're 1D arrays, reshape them to 2D using meshgrid
+                        if u_data.ndim == 1 and v_data.ndim == 1:
+                            u_grid, v_grid = np.meshgrid(u_data, v_data)
+                        # If they're already 2D but don't match the meshgrid shape
+                        elif u_data.shape != plot_lats.shape or v_data.shape != plot_lats.shape:
+                            # Interpolate to match the grid if shapes are different
+                            # For now, we'll reshape if possible
+                            try:
+                                u_grid = np.reshape(u_data, plot_lats.shape)
+                                v_grid = np.reshape(v_data, plot_lats.shape)
+                            except ValueError:
+                                # If reshape fails, try to broadcast if dimensions are compatible
+                                if u_data.shape[0] == plot_lats.shape[0] and v_data.shape[0] == plot_lats.shape[0]:
+                                    # Broadcast 1D arrays to 2D if the first dimension matches
+                                    u_grid = np.broadcast_to(u_data[:, np.newaxis], plot_lats.shape)
+                                    v_grid = np.broadcast_to(v_data[:, np.newaxis], plot_lats.shape)
+                                else:
+                                    # Log error and skip plotting if shapes can't be reconciled
+                                    logger.error(f"Cannot reshape wind data from {u_data.shape} to {plot_lats.shape} for plotting")
+                                    raise ValueError(f"Wind data shape {u_data.shape} incompatible with grid shape {plot_lats.shape}")
+                        else:
+                            # Already the right shape
+                            u_grid = u_data
+                            v_grid = v_data
+                            
+                        # Log the shapes for debugging
+                        logger.debug(f"Plotting wind field with shapes - lats: {plot_lats.shape}, lons: {plot_lons.shape}, u: {u_grid.shape}, v: {v_grid.shape}")
+                        
+                        plot_wind_field(
+                            u_wind=u_grid, 
+                            v_wind=v_grid,
+                            lats=plot_lats, 
+                            lons=plot_lons,
+                            threshold=self.min_speed,
+                            time_step=time_step,
+                            output_dir=output_dir
+                        )
+                        logger.debug(f"Saved wind_threshold plot for {time_step} to {output_dir}")
+                    except Exception as plot_e:
+                        logger.error(f"Error plotting wind_threshold field for {time_step}: {plot_e}")
+
                 if len(maxima_indices) < 2 or len(maxima_indices[0]) == 0:
                     logger.warning("No wind speed maxima found above threshold")
                     return []

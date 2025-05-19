@@ -10,10 +10,10 @@ import numpy as np
 from typing import Dict, List, Any, Optional
 import logging
 import scipy.ndimage as ndimage
-from skimage import measure
 
 from . import BaseCriterion
 from core.exceptions import DetectionError
+from visualization.criteria import plot_pressure_field
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -56,13 +56,15 @@ class ClosedContourCriterion(BaseCriterion):
                    f"min_contours={min_contours}, "
                    f"max_area={max_area}")
     
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Applies the criterion to the dataset.
         
         Arguments:
             dataset: Dataset of meteorological data.
             time_step: Time step for analysis.
+            debug_plot: If True, enables plotting of criterion fields for debugging.
+            output_dir: Directory for saving plots, if debug_plot=True.
             
         Returns:
             List of cyclone candidates (dictionaries with coordinates and properties).
@@ -135,6 +137,21 @@ class ClosedContourCriterion(BaseCriterion):
                         
                         candidates.append(candidate)
             
+            if debug_plot and output_dir:
+                try:
+                    lons_2d, lats_2d = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
+                    # Use pressure_field which is already smoothed if self.smooth_data is True
+                    plot_pressure_field(
+                        pressure=pressure_field, # Use the (potentially smoothed) pressure field used for detection
+                        lats=lats_2d,
+                        lons=lons_2d,
+                        time_step=time_step,
+                        output_dir=output_dir
+                    )
+                    logger.debug(f"Saved pressure field plot (for closed_contour context) for {time_step} to {output_dir}")
+                except Exception as plot_e:
+                    logger.error(f"Error plotting pressure field (for closed_contour context) for {time_step}: {plot_e}")
+        
             logger.debug(f"Closed contour criterion found {len(candidates)} candidates")
             return candidates
             

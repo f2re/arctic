@@ -70,7 +70,7 @@ class ConfigManager:
                 }
             },
             'detection': {
-                'min_latitude': 70.0,
+                'min_latitude': 65.0,
                 'criteria': {
                     'pressure_minimum': True,
                     'vorticity_threshold': 1e-5,

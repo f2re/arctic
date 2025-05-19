@@ -13,6 +13,7 @@ import scipy.ndimage as ndimage
 
 from . import BaseCriterion
 from core.exceptions import DetectionError
+from visualization.criteria import plot_pressure_field
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -49,13 +50,15 @@ class PressureMinimumCriterion(BaseCriterion):
                     f"window_size={window_size}, "
                     f"smooth_sigma={smooth_sigma}")
     
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Применяет критерий к набору данных.
         
         Аргументы:
             dataset: Набор метеорологических данных xarray.
             time_step: Временной шаг для анализа.
+            debug_plot: Если True, включает построение графиков полей критериев для отладки.
+            output_dir: Каталог для сохранения графиков, если debug_plot=True.
             
         Возвращает:
             Список кандидатов в циклоны (словари с координатами и свойствами).
@@ -98,6 +101,22 @@ class PressureMinimumCriterion(BaseCriterion):
             # Получаем координаты минимумов
             minima_indices = np.where(local_minima)
             
+            if debug_plot and output_dir:
+                try:
+                    # Ensure lats and lons are 2D for plotting
+                    plot_lons, plot_lats = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
+                    # pressure_field is already smoothed if self.smooth_sigma > 0
+                    plot_pressure_field(
+                        pressure=pressure_field, # Pass the pressure field used for finding minima
+                        lats=plot_lats, 
+                        lons=plot_lons,
+                        time_step=time_step,
+                        output_dir=output_dir
+                    )
+                    logger.debug(f"Saved pressure_minimum plot for {time_step} to {output_dir}")
+                except Exception as plot_e:
+                    logger.error(f"Error plotting pressure_minimum field for {time_step}: {plot_e}")
+
             # Формируем список кандидатов
             candidates = []
             

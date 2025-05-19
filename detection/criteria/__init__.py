@@ -23,13 +23,15 @@ class BaseCriterion(ABC):
     """
     
     @abstractmethod
-    def apply(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
+    def apply(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> List[Dict]:
         """
         Applies the criterion to a dataset.
         
         Arguments:
             dataset: xarray meteorological dataset.
             time_step: Time step for analysis.
+            debug_plot: If True, enables plotting of criterion fields for debugging.
+            output_dir: Directory to save plots if debug_plot is True.
             
         Returns:
             List of cyclone candidates (dictionaries with coordinates and properties).
@@ -165,13 +167,15 @@ class CriteriaManager:
         """
         return self.active_criteria.copy()
     
-    def apply_criteria(self, dataset: xr.Dataset, time_step: Any) -> Dict[str, List[Dict]]:
+    def apply_criteria(self, dataset: xr.Dataset, time_step: Any, debug_plot: bool = False, output_dir: Optional[str] = None) -> Dict[str, List[Dict]]:
         """
         Applies all active criteria to a dataset.
         
         Arguments:
             dataset: xarray meteorological dataset.
             time_step: Time step for analysis.
+            debug_plot: If True, enables plotting of criterion fields for debugging.
+            output_dir: Directory to save plots if debug_plot is True.
             
         Returns:
             Dictionary with results from applying each criterion.
@@ -179,9 +183,9 @@ class CriteriaManager:
         results = {}
         
         for name in self.active_criteria:
-            criterion = self.criteria[name]()
+            criterion = self.criteria[name]() # Assuming criteria are stored as classes and instantiated here
             try:
-                candidates = criterion.apply(dataset, time_step)
+                candidates = criterion.apply(dataset, time_step, debug_plot=debug_plot, output_dir=output_dir)
                 results[name] = candidates
                 logger.debug(f"Criterion {name} found {len(candidates)} candidates")
             except Exception as e:

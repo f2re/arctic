@@ -102,7 +102,7 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     # Define region and parameters for data acquisition
     region = {
         'north': 90.0,  # Northern boundary (North Pole)
-        'south': 70.0,  # Southern boundary (Arctic Circle)
+        'south': 65.0,  # Southern boundary (Arctic Circle)
         'east': 180.0,  # Eastern boundary
         'west': -180.0  # Western boundary (full longitude range)
     }
@@ -214,7 +214,8 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     
     # Initialize detector with proper parameters
     detector = CycloneDetector(min_latitude=min_latitude, 
-                              config=config.config)  # Pass the raw config dictionary
+                              config=config.config,
+                              debug_plot=True)  # Pass the raw config dictionary
     
     # No need to explicitly set criteria - they are now read from config automatically
     

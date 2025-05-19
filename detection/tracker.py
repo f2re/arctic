@@ -16,11 +16,13 @@ import logging
 from scipy.spatial.distance import cdist
 import warnings
 import uuid
+import os
 
 from core.exceptions import DetectionError, TrackingError
 from models.cyclone import Cyclone, CycloneType, CycloneParameters
 from .criteria import CriteriaManager, BaseCriterion
 from .validators import DetectionValidator
+from visualization.criteria import plot_laplacian_field, plot_vorticity_field, plot_pressure_field, plot_wind_field, plot_closed_contour_field
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -33,18 +35,20 @@ class CycloneDetector:
     с использованием гибкой системы критериев обнаружения.
     """
     
-    def __init__(self, min_latitude: float = 70.0, config=None):
+    def __init__(self, min_latitude: float = 65.0, config=None, debug_plot: bool = False):
         """
         Инициализирует детектор циклонов с указанной минимальной широтой.
         
         Аргументы:
-            min_latitude: Минимальная широта для Арктического региона (по умолчанию 70°N).
+            min_latitude: Минимальная широта для Арктического региона (по умолчанию 65°N).
             config: Конфигурация обнаружения циклонов из config.yaml
+            debug_plot: Флаг для визуализации полей критериев обнаружения (по умолчанию False)
         """
         self.min_latitude = min_latitude
         self.criteria_manager = CriteriaManager()
         self.validator = DetectionValidator()
         self.config = config
+        self.debug_plot = debug_plot
         
         # Регистрируем стандартные критерии обнаружения
         self._register_default_criteria()
@@ -53,7 +57,7 @@ class CycloneDetector:
         if self.config:
             self._configure_criteria_from_config()
         
-        logger.info(f"Инициализирован детектор циклонов с минимальной широтой {min_latitude}°N")
+        logger.info(f"Инициализирован детектор циклонов с минимальной широтой {min_latitude}°N, debug_plot={debug_plot}")
     
     def _register_default_criteria(self):
         """
@@ -184,49 +188,39 @@ class CycloneDetector:
         Возвращает:
             Список кандидатов в циклоны (словари с координатами и свойствами).
         """
+        logger.info(f"Применение критериев обнаружения для временного шага: {time_step}")
+        
         # Получаем активные критерии
         active_criteria_names = self.criteria_manager.get_active_criterion_names()
-        active_criteria_classes = self.criteria_manager.get_active_criteria()
+        if not active_criteria_names:
+            logger.warning("Нет активных критериев обнаружения. Проверьте конфигурацию.")
+            return []
+
+        output_plot_dir = Path("output/plots/criteria") # Define the output directory for plots
         
-        if not active_criteria_classes:
-            logger.warning("Не заданы активные критерии обнаружения, используется критерий минимума давления")
-            from .criteria.pressure import PressureMinimumCriterion
-            active_criteria_classes = [PressureMinimumCriterion]
-            active_criteria_names = ['pressure_minimum']
+        # Применяем критерии
+        try:
+            # Передаем флаг debug_plot и output_dir в apply_criteria
+            criteria_results = self.criteria_manager.apply_criteria(
+                dataset, time_step, 
+                debug_plot=self.debug_plot, 
+                output_dir=str(output_plot_dir) # Pass as string, Path object handled by plotting functions
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при применении критериев: {str(e)}")
+            raise DetectionError(f"Ошибка при применении критериев: {str(e)}")
+
+        all_candidates = []
         
-        # Применяем каждый критерий
-        candidates_by_criterion = []
-        
-        for i, criterion_class in enumerate(active_criteria_classes):
-            criterion_name = criterion_class.__name__
-            criterion_key = active_criteria_names[i] if i < len(active_criteria_names) else None
-            logger.debug(f"Применение критерия: {criterion_name}")
-            
-            try:
-                # Prepare params for criterion instantiation
-                params = {'min_latitude': self.min_latitude}
-                
-                # Add parameters from config if available
-                if hasattr(self, 'criteria_params') and criterion_key in self.criteria_params:
-                    params.update(self.criteria_params[criterion_key])
-                    logger.debug(f"Применение параметров для {criterion_key}: {params}")
-                
-                # Instantiate the criterion with parameters
-                criterion = criterion_class(**params)
-                
-                # Apply the criterion with time_step parameter
-                candidates = criterion.apply(dataset, time_step)
-                candidates_by_criterion.append(candidates)
-                logger.debug(f"Критерий {criterion_name} нашел {len(candidates)} кандидатов")
-            except Exception as e:
-                logger.warning(f"Ошибка при применении критерия {criterion_class.__name__}: {str(e)}")
+        for criterion_name, candidates in criteria_results.items():
+            all_candidates.extend(candidates)
         
         # Фильтруем кандидатов, подходящих под все критерии
-        if len(candidates_by_criterion) == 0:
+        if len(active_criteria_names) == 0:
             return []
             
-        if len(candidates_by_criterion) == 1:
-            return candidates_by_criterion[0]
+        if len(active_criteria_names) == 1:
+            return all_candidates
             
         # Объединяем результаты всех критериев
         # Это можно сделать по-разному в зависимости от требований:
@@ -238,10 +232,11 @@ class CycloneDetector:
         tolerance = 1.0  # допустимое отклонение в градусах
         
         # Начинаем с кандидатов первого критерия
-        filtered_candidates = candidates_by_criterion[0].copy()
+        filtered_candidates = criteria_results[active_criteria_names[0]].copy()
         
         # Проверяем соответствие кандидатов остальным критериям
-        for candidates in candidates_by_criterion[1:]:
+        for criterion_name in active_criteria_names[1:]:
+            candidates = criteria_results[criterion_name]
             # Создаем массивы координат
             fc_coords = np.array([[c['latitude'], c['longitude']] for c in filtered_candidates])
             c_coords = np.array([[c['latitude'], c['longitude']] for c in candidates])

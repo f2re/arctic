@@ -50,12 +50,13 @@ class CycloneDetector:
         self.config = config
         self.debug_plot = debug_plot
         
-        # Регистрируем стандартные критерии обнаружения
-        self._register_default_criteria()
         
         # Если конфигурация предоставлена, устанавливаем активные критерии из конфигурации
         if self.config:
             self._configure_criteria_from_config()
+        else:
+            # Регистрируем стандартные критерии обнаружения
+            self._register_default_criteria()
         
         logger.info(f"Инициализирован детектор циклонов с минимальной широтой {min_latitude}°N, debug_plot={debug_plot}")
     

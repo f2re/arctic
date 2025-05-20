@@ -147,8 +147,8 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     # Combined dataset to store results
     combined_dataset = None
     
-    # Download data from ERA5
-    logger.info(f"Downloading ERA5 data for period {start_date} to {end_date}")
+    # Download ERA5 data ONCE for the entire workflow. This ensures efficient data reuse and avoids redundant downloads.
+    logger.info(f"[ONE-TIME] Downloading ERA5 data for period {start_date} to {end_date}")
     try:
         # Get pressure level data if there are pressure level variables
         if pressure_level_vars:
@@ -209,23 +209,26 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     # Load detection configuration
     detection_config = config.get('detection')
     
-    # Initialize cyclone detector with configuration
-    min_latitude = detection_config['min_latitude'] if 'min_latitude' in detection_config else 70.0
+    # Instantiate CycloneDetector ONCE per workflow. Criteria registration occurs only in __init__, preventing redundant registration/logging.
+    min_latitude = detection_config['min_latitude'] if 'min_latitude' in detection_config else 65.0
     
-    # Initialize detector with proper parameters
+    logger.info("[ONE-TIME] Instantiating CycloneDetector and registering detection criteria.")
     detector = CycloneDetector(min_latitude=min_latitude, 
                               config=config.config,
                               debug_plot=True)  # Pass the raw config dictionary
     
     # No need to explicitly set criteria - they are now read from config automatically
+    # Criteria registration occurs only once in CycloneDetector.__init__
     diagnostic_dir = Path(output_dir) / "diagnostics"
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
     
-    # Detect cyclones for each time step
-    logger.info("Detecting cyclones...")
+    # Detect cyclones for each time step using the already-loaded ERA5 dataset and the single CycloneDetector instance.
+    logger.info("Detecting cyclones using single loaded dataset and detector instance...")
     all_cyclones = {}
     
     for time_step in dataset.time.values:
+        # Debug: log detector id and dataset state before detection
+        logger.debug(f"[main.py] Calling detector.detect at time_step={time_step}, detector id={getattr(detector, '_instance_id', id(detector))}, dataset variables={list(dataset.variables.keys())}, dataset shape={[v.shape for v in dataset.data_vars.values()]}")
         try:
             cyclones = detector.detect(dataset, time_step)
             all_cyclones[time_step] = cyclones

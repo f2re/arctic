@@ -22,7 +22,7 @@ from core.exceptions import DetectionError, TrackingError
 from models.cyclone import Cyclone, CycloneType, CycloneParameters
 from .criteria import CriteriaManager, BaseCriterion
 from .validators import DetectionValidator
-from visualization.criteria import plot_laplacian_field, plot_vorticity_field, plot_pressure_field, plot_wind_field, plot_closed_contour_field
+from visualization.criteria import plot_laplacian_field, plot_vorticity_field, plot_pressure_field, plot_wind_field, plot_closed_contour_field, plot_combined_criteria
 
 # Инициализация логгера
 logger = logging.getLogger(__name__)
@@ -35,7 +35,10 @@ class CycloneDetector:
     с использованием гибкой системы критериев обнаружения.
     """
     
-    def __init__(self, min_latitude: float = 65.0, config=None, debug_plot: bool = False):
+    def __init__(self, min_latitude: float = 65.0, config: Optional[Dict] = None, debug_plot: bool = False):
+        import logging
+        self._instance_id = id(self)
+        logging.getLogger(__name__).debug(f"[CycloneDetector __init__] Instance id: {self._instance_id}, min_latitude={min_latitude}, debug_plot={debug_plot}")
         """
         Инициализирует детектор циклонов с указанной минимальной широтой.
         
@@ -50,9 +53,9 @@ class CycloneDetector:
         self.config = config
         self.debug_plot = debug_plot
         
-        
         # Если конфигурация предоставлена, устанавливаем активные критерии из конфигурации
         if self.config:
+            self._register_default_criteria()
             self._configure_criteria_from_config()
         else:
             # Регистрируем стандартные критерии обнаружения
@@ -115,24 +118,21 @@ class CycloneDetector:
         # Устанавливаем активные критерии
         if active_criteria:
             self.criteria_manager.set_active_criteria(active_criteria)
-            logger.info(f"Установлены активные критерии из конфигурации: {', '.join(active_criteria)}")
         else:
             logger.warning("В конфигурации не найдены активные критерии, используем стандартные")
     
-    def detect(self, dataset: xr.Dataset, time_step: Optional[str] = None) -> List[Cyclone]:
-        """
-        Обнаруживает циклоны в наборе данных для указанного временного шага.
-        
-        Аргументы:
-            dataset: Набор метеорологических данных xarray.
-            time_step: Временной шаг для анализа. Если None, используется первый доступный.
-            
-        Возвращает:
-            Список обнаруженных объектов Cyclone.
-            
-        Вызывает:
-            DetectionError: При ошибке обнаружения циклонов.
-        """
+    def detect(self, dataset: xr.Dataset, time_step: Any) -> List[Cyclone]:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[CycloneDetector.detect] Instance id: {getattr(self, '_instance_id', id(self))}, time_step={time_step}")
+        if dataset is None or len(dataset.variables) == 0:
+            logger.warning(f"[CycloneDetector.detect] Called with empty or None dataset at time_step={time_step} (instance id: {getattr(self, '_instance_id', id(self))})")
+            return []
+        # Check for critical variables
+        required_vars = ['vorticity', 'msl', 'u', 'v']
+        missing = [var for var in required_vars if var not in dataset]
+        if missing:
+            logger.warning(f"[CycloneDetector.detect] Dataset missing required variables {missing} at time_step={time_step} (instance id: {getattr(self, '_instance_id', id(self))})")        
         try:
             if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
                 dataset = dataset.rename({'valid_time': 'time'})
@@ -191,87 +191,119 @@ class CycloneDetector:
         """
         logger.info(f"Применение критериев обнаружения для временного шага: {time_step}")
         
-        # Получаем активные критерии
-        active_criteria_names = self.criteria_manager.get_active_criterion_names()
-        if not active_criteria_names:
-            logger.warning("Нет активных критериев обнаружения. Проверьте конфигурацию.")
-            return []
-
-        output_plot_dir = Path("output/plots/criteria") # Define the output directory for plots
+        # Получаем список активных критериев
+        active_criteria = self.criteria_manager.get_active_criteria()
         
-        # Применяем критерии
-        try:
-            # Передаем флаг debug_plot и output_dir в apply_criteria
-            criteria_results = self.criteria_manager.apply_criteria(
-                dataset, time_step, 
-                debug_plot=self.debug_plot, 
-                output_dir=str(output_plot_dir) # Pass as string, Path object handled by plotting functions
-            )
-        except Exception as e:
-            logger.error(f"Ошибка при применении критериев: {str(e)}")
-            raise DetectionError(f"Ошибка при применении критериев: {str(e)}")
-
+        if not active_criteria:
+            logger.warning("Нет активных критериев обнаружения циклонов")
+            return []
+        
+        # Создаем директорию для отладочных графиков, если включен режим отладки
+        output_dir = None
+        timestamp = format_timestep(time_step)
+        if self.debug_plot:
+            output_dir = Path(f"output/plots/criteria/{timestamp}")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Создана директория для отладочных графиков: {output_dir}")
+        
+        # Применяем каждый критерий и собираем кандидатов
         all_candidates = []
         
-        for criterion_name, candidates in criteria_results.items():
-            all_candidates.extend(candidates)
+        # Dictionary to collect visualization data for combined plot
+        criteria_viz_data = {}
         
-        # Фильтруем кандидатов, подходящих под все критерии
-        if len(active_criteria_names) == 0:
+        for criterion_name, criterion in active_criteria.items():
+            logger.debug(f"Применяем критерий: {criterion_name}")
+            
+            try:
+                # Если включен режим отладки, но мы хотим комбинированную визуализацию,
+                # то отключаем отдельную визуализацию для каждого критерия
+                individual_debug_plot = self.debug_plot
+                
+                # Применяем критерий с включенной отладочной визуализацией, если требуется
+                candidates = criterion.apply(
+                    dataset=dataset, 
+                    time_step=time_step,
+                    debug_plot=individual_debug_plot,
+                    output_dir=output_dir
+                )
+                
+                # Добавляем имя критерия к каждому кандидату
+                for candidate in candidates:
+                    if 'criterion' not in candidate:
+                        candidate['criterion'] = criterion_name
+                
+                logger.debug(f"Критерий {criterion_name} нашел {len(candidates)} кандидатов")
+                all_candidates.extend(candidates)
+                
+                # Collect data for combined visualization if debug_plot is enabled
+                if self.debug_plot:
+                    # Extract data for visualization based on criterion type
+                    if criterion_name == 'pressure_laplacian' and hasattr(criterion, 'laplacian_field'):
+                        criteria_viz_data['pressure_laplacian'] = {
+                            'laplacian': criterion.laplacian_field,
+                            'lats': dataset.latitude.values,
+                            'lons': dataset.longitude.values,
+                            'threshold': criterion.laplacian_threshold,
+                            'time_step': time_step,
+                            'output_dir': output_dir
+                        }
+                    elif criterion_name == 'vorticity' and hasattr(criterion, 'vorticity_field'):
+                        criteria_viz_data['vorticity'] = {
+                            'vorticity': criterion.vorticity_field,
+                            'lats': dataset.latitude.values,
+                            'lons': dataset.longitude.values,
+                            'threshold': criterion.vorticity_threshold,
+                            'time_step': time_step,
+                            'output_dir': output_dir
+                        }
+                    elif criterion_name == 'wind_threshold' and hasattr(criterion, 'u_data') and hasattr(criterion, 'v_data'):
+                        criteria_viz_data['wind_threshold'] = {
+                            'u_wind': criterion.u_data,
+                            'v_wind': criterion.v_data,
+                            'lats': dataset.latitude.values,
+                            'lons': dataset.longitude.values,
+                            'threshold': criterion.min_speed,
+                            'time_step': time_step,
+                            'output_dir': output_dir
+                        }
+                    elif criterion_name == 'closed_contour' and hasattr(criterion, 'pressure_field') and hasattr(criterion, 'contour_mask'):
+                        criteria_viz_data['closed_contour'] = {
+                            'pressure': criterion.pressure_field,
+                            'contour_mask': criterion.contour_mask,
+                            'lats': dataset.latitude.values,
+                            'lons': dataset.longitude.values,
+                            'time_step': time_step,
+                            'output_dir': output_dir
+                        }
+                
+            except Exception as e:
+                logger.error(f"Ошибка при применении критерия {criterion_name}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # Create combined visualization if debug_plot is enabled and we have data to visualize
+        if self.debug_plot and criteria_viz_data:
+            try:
+                logger.info(f"Creating combined visualization for {len(criteria_viz_data)} criteria")
+                combined_output = plot_combined_criteria(
+                    criteria_data=criteria_viz_data,
+                    time_step=time_step,
+                    output_dir=output_dir
+                )
+                logger.info(f"Saved combined criteria visualization to {combined_output}")
+            except Exception as e:
+                logger.error(f"Error creating combined visualization: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # Проверяем результаты
+        if not all_candidates:
+            logger.info(f"Не найдено кандидатов в циклоны для временного шага {time_step}")
             return []
-            
-        if len(active_criteria_names) == 1:
-            return all_candidates
-            
-        # Объединяем результаты всех критериев
-        # Это можно сделать по-разному в зависимости от требований:
-        # 1. Пересечение (циклон должен удовлетворять всем критериям)
-        # 2. Объединение (циклон должен удовлетворять хотя бы одному критерию)
-        # 3. Взвешенное решение (баллы за каждый критерий)
         
-        # Реализуем пересечение по координатам (с некоторой допустимой погрешностью)
-        tolerance = 1.0  # допустимое отклонение в градусах
-        
-        # Начинаем с кандидатов первого критерия
-        filtered_candidates = criteria_results[active_criteria_names[0]].copy()
-        
-        # Проверяем соответствие кандидатов остальным критериям
-        for criterion_name in active_criteria_names[1:]:
-            candidates = criteria_results[criterion_name]
-            # Создаем массивы координат
-            fc_coords = np.array([[c['latitude'], c['longitude']] for c in filtered_candidates])
-            c_coords = np.array([[c['latitude'], c['longitude']] for c in candidates])
-            
-            if len(fc_coords) == 0 or len(c_coords) == 0:
-                filtered_candidates = []
-                break
-            
-            # Рассчитываем матрицу расстояний
-            distances = cdist(fc_coords, c_coords)
-            
-            # Находим минимальные расстояния и соответствующие индексы
-            min_distances = np.min(distances, axis=1)
-            min_indices = np.argmin(distances, axis=1)
-            
-            # Отбираем кандидатов, удовлетворяющих порогу
-            valid_indices = np.where(min_distances <= tolerance)[0]
-            
-            # Обновляем отфильтрованный список
-            new_filtered = []
-            for i in valid_indices:
-                # Объединяем свойства кандидатов из разных критериев
-                merged_candidate = filtered_candidates[i].copy()
-                j = min_indices[i]
-                
-                for key, value in candidates[j].items():
-                    if key not in merged_candidate:
-                        merged_candidate[key] = value
-                
-                new_filtered.append(merged_candidate)
-            
-            filtered_candidates = new_filtered
-        
-        return filtered_candidates
+        logger.info(f"Найдено {len(all_candidates)} кандидатов в циклоны для временного шага {time_step}")
+        return all_candidates
     
     def _create_cyclone(self, candidate: Dict, dataset: xr.Dataset, time_step: Any) -> Cyclone:
         """
@@ -319,19 +351,57 @@ class CycloneDetector:
         else:
             time_obj = time_step
         
+        # Ensure vorticity data is available in the dataset
+        time_data = dataset.sel(time=time_step)
+        
+        # Check if vorticity data is missing and try to add it
+        vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
+        has_vorticity = any(var in time_data for var in vorticity_vars)
+        
+        if not has_vorticity:
+            try:
+                # Try to get vorticity criterion to calculate vorticity
+                vorticity_criterion = self.criteria_manager.get_criterion('vorticity')
+                if vorticity_criterion:
+                    logger.info("Adding vorticity data to dataset for cyclone creation")
+                    # Apply the criterion to calculate vorticity but don't use it for detection
+                    vorticity_criterion._calculate_vorticity(
+                        dataset=time_data, 
+                        time_step=time_step,
+                        u_var='u', 
+                        v_var='v'
+                    )
+            except Exception as e:
+                logger.warning(f"Could not add vorticity data: {str(e)}")
+        
         # Создаем объект циклона
         cyclone = Cyclone(
             latitude=latitude,
             longitude=longitude,
             time=time_obj,
             central_pressure=central_pressure,
-            dataset=dataset.sel(time=time_step)
+            dataset=time_data
         )
+        
+        # Set detector instance for parameter calculation
+        cyclone.detector = self
         
         # Добавляем дополнительные свойства из кандидата
         for key, value in candidate.items():
             if key not in ['latitude', 'longitude', 'pressure']:
                 setattr(cyclone, key, value)
+        
+        # If candidate has vorticity_field, store it in cyclone parameters
+        if 'vorticity_field' in candidate:
+            if not hasattr(cyclone, 'parameters'):
+                from models.parameters import CycloneParameters
+                cyclone.parameters = CycloneParameters(
+                    central_pressure=central_pressure,
+                    vorticity_850hPa=None,
+                    max_wind_speed=None,
+                    radius=None
+                )
+            cyclone.parameters.vorticity_850hPa = np.max(candidate['vorticity_field'])
         
         return cyclone
     
@@ -358,6 +428,7 @@ class CycloneDetector:
         
         return result
     
+    _active_criteria_set = False  # class-level guard
     def set_criteria(self, criterion_names: List[str]) -> None:
         """
         Устанавливает активные критерии обнаружения циклонов.
@@ -718,3 +789,38 @@ class CycloneTracker:
         }
         
         return result
+    
+
+
+def format_timestep(time_step):
+    # Проверяем тип данных
+    if isinstance(time_step, np.datetime64):
+        # Метод 1: Преобразование через строку (простой и не требует доп. библиотек)
+        dt_str = str(time_step)
+        if 'T' in dt_str:
+            date_part = dt_str.split('T')[0]  # Получаем '2010-01-01'
+            time_part = dt_str.split('T')[1]  # Получаем '00:00:00.000000000'
+            hour_part = time_part.split(':')[0]  # Получаем '00'
+            return f"{date_part}_{hour_part}"
+        
+        # Метод 2: Через datetime (если первый метод не сработал)
+        try:
+            dt_obj = time_step.astype('datetime64[s]').item()  # Преобразуем в Python datetime
+            return dt_obj.strftime('%Y-%m-%d_%H')
+        except (AttributeError, ValueError):
+            pass
+        
+    # Обработка других типов временных меток
+    elif hasattr(time_step, 'strftime'):  # Для объектов datetime
+        return time_step.strftime('%Y-%m-%d_%H')
+    
+    elif isinstance(time_step, str):  # Для строковых представлений
+        if 'T' in time_step:  # ISO формат
+            date_part = time_step.split('T')[0]
+            time_part = time_step.split('T')[1]
+            hour_part = time_part[:2] if ':' in time_part else time_part
+            return f"{date_part}_{hour_part}"
+    
+    # Fallback for other cases
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return timestamp

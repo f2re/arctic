@@ -14,21 +14,21 @@ data:
 
 # Detection settings
 detection:
-  min_latitude: 70.0  # Minimum latitude (degrees North) for Arctic region
+  min_latitude: 65.0  # Minimum latitude (degrees North) for Arctic region
   criteria:
     pressure_minimum:
       enabled: false
       threshold: 1010.0  # Maximum pressure to consider (hPa)
       gradient_threshold: 0.5  # Minimum pressure gradient (hPa/100km)
     vorticity:
-      enabled: false
+      enabled: true
       threshold: 1.0e-5  # Minimum vorticity (1/s)
       level: 850  # Pressure level for vorticity analysis (hPa)
     closed_contour:
-      enabled: false
+      enabled: true
       contour_interval: 5.0  # Pressure contour interval (hPa)
     wind_threshold:
-      enabled: false
+      enabled: true
       min_speed: 15.0  # Minimum wind speed (m/s)
     pressure_laplacian:
       enabled: true

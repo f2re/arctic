@@ -149,14 +149,14 @@ class CriteriaManager:
         self.active_criteria = names
         logger.info(f"Set active criteria: {', '.join(names)}")
     
-    def get_active_criteria(self) -> List:
+    def get_active_criteria(self) -> Dict[str, BaseCriterion]:
         """
-        Returns a list of active criterion classes.
+        Returns a dictionary of active criterion instances.
         
         Returns:
-            List of active criterion classes.
+            Dictionary mapping criterion names to their instances.
         """
-        return [self.criteria[name] for name in self.active_criteria]
+        return {name: self.criteria[name]() for name in self.active_criteria}
     
     def get_active_criterion_names(self) -> List[str]:
         """

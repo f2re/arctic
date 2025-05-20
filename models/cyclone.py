@@ -91,11 +91,12 @@ class Cyclone:
         logger.debug(f"Создан циклон: lat={latitude}, lon={longitude}, "
                     f"time={self.time}, pressure={central_pressure} гПа")
     
-    def _calculate_parameters(self, dataset: xr.Dataset) -> CycloneParameters:
+    def _calculate_parameters(self, dataset: xr.Dataset, detector: 'CycloneDetector') -> Dict[str, Any]:
         """
-        Рассчитывает комплексный набор параметров циклона.
-        
+        Рассчитывает параметры циклона с использованием переданного экземпляра CycloneDetector.
         Аргументы:
+            dataset: xarray.Dataset с метеорологическими данными
+            detector: Экземпляр CycloneDetector, созданный в основном workflow (обязателен)
             dataset: Набор метеорологических данных.
             
         Возвращает:
@@ -105,40 +106,55 @@ class Cyclone:
             # Извлекаем регион вокруг циклона
             region = self._extract_cyclone_region(dataset)
             
-            # Рассчитываем завихренность на 850 гПа
-            vorticity = self._calculate_max_vorticity(region)
+            # Словарь для хранения рассчитанных параметров
+            calculated_params = {
+                'central_pressure': self.central_pressure
+            }
             
-            # Рассчитываем скорость ветра
-            wind_speed = self._calculate_max_wind_speed(region)
+            # Получаем активные критерии и их параметры
+            active_criteria = detector.criteria_manager.get_active_criteria()
+            criteria_params = getattr(detector, 'criteria_params', {})
             
-            # Рассчитываем радиус по замкнутым изобарам
-            radius = self._calculate_radius(region)
+            # Применяем только зарегистрированные методы на основе активных критериев
+            if 'vorticity' in active_criteria and region is not None:
+                vorticity = self._calculate_max_vorticity(region)
+                calculated_params['vorticity_850hPa'] = vorticity
             
-            # Определяем термическую структуру
-            thermal_type, t_anomaly = self._determine_thermal_structure(region)
+            if 'wind_threshold' in active_criteria and region is not None:
+                wind_speed = self._calculate_max_wind_speed(region)
+                calculated_params['max_wind_speed'] = wind_speed
             
-            # Рассчитываем градиент давления
-            pressure_gradient = self._calculate_pressure_gradient(region)
+            if 'closed_contour' in active_criteria and region is not None:
+                radius = self._calculate_radius(region)
+                calculated_params['radius'] = radius
             
-            # Создаем объект параметров
-            parameters = CycloneParameters(
-                central_pressure=self.central_pressure,
-                vorticity_850hPa=vorticity,
-                max_wind_speed=wind_speed,
-                radius=radius,
-                thermal_type=thermal_type,
-                temperature_anomaly=t_anomaly,
-                pressure_gradient=pressure_gradient
-            )
+            if 'pressure_laplacian' in active_criteria and region is not None:
+                pressure_gradient = self._calculate_pressure_gradient(region)
+                calculated_params['pressure_gradient'] = pressure_gradient
             
-            logger.debug(f"Рассчитаны параметры циклона: vorticity={vorticity}, "
-                       f"wind_speed={wind_speed}, radius={radius}, "
-                       f"thermal_type={thermal_type.value}")
+            # Определяем термическую структуру, если доступны необходимые данные
+            if region is not None and any(var in region for var in ['temperature', 't']):
+                thermal_type, t_anomaly = self._determine_thermal_structure(region)
+                calculated_params['thermal_type'] = thermal_type
+                calculated_params['temperature_anomaly'] = t_anomaly
+            
+            # Создаем объект параметров с рассчитанными значениями
+            parameters = CycloneParameters(**calculated_params)
+            
+            # Логируем рассчитанные параметры
+            log_params = {k: v for k, v in calculated_params.items() 
+                         if k != 'central_pressure' and k != 'thermal_type' and v is not None}
+            if 'thermal_type' in calculated_params and calculated_params['thermal_type'] is not None:
+                log_params['thermal_type'] = calculated_params['thermal_type'].value
+                
+            logger.debug(f"Рассчитаны параметры циклона: {log_params}")
             
             return parameters
             
         except Exception as e:
             logger.warning(f"Ошибка при расчете параметров циклона: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
             
             # Возвращаем параметры с минимальной информацией
             return CycloneParameters(
@@ -210,51 +226,53 @@ class Cyclone:
         Возвращает:
             Максимальное значение завихренности или None, если расчет невозможен.
         """
-        # Проверяем наличие переменной завихренности
-        vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
-        vorticity_var = None
-        
-        # Add diagnostics about available variables in the region dataset
-        logger.debug(f"Available variables in region dataset: {list(region.variables)}")
-        logger.debug(f"Region dataset dimensions: {region.dims}")
-        
-        for var in vorticity_vars:
-            if var in region:
-                vorticity_var = var
-                logger.debug(f"Found vorticity variable: {var}")
-                break
-        
-        if vorticity_var is None:
-            logger.warning("No vorticity variable found in region dataset")
-            return None
-        
-        # Если переменная завихренности есть, используем ее
-        if 'level' in region.dims and vorticity_var in region:
-            # Ищем уровень 850 гПа или ближайший
-            levels = region.level.values
-            level_850 = min(levels, key=lambda x: abs(x - 850))
-            
-            vorticity = region[vorticity_var].sel(level=level_850)
-        else:
-            vorticity = region[vorticity_var]
-        
-        # Находим максимальное значение
         try:
-            # Check if the array is empty before trying to find the max
+            # Проверяем наличие переменной завихренности
+            vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
+            vorticity_var = None
+            
+            # Добавляем диагностику о доступных переменных в наборе данных
+            logger.debug(f"Available variables in region dataset: {list(region.variables)}")
+            logger.debug(f"Region dataset dimensions: {region.dims}")
+            
+            for var in vorticity_vars:
+                if var in region:
+                    vorticity_var = var
+                    logger.debug(f"Found vorticity variable: {var}")
+                    break
+            
+            if vorticity_var is None:
+                logger.warning("No vorticity variable found in region dataset")
+                return None
+            
+            # Если переменная завихренности есть, используем ее
+            if 'level' in region.dims and vorticity_var in region:
+                # Ищем уровень 850 гПа или ближайший
+                levels = region.level.values
+                level_850 = min(levels, key=lambda x: abs(x - 850))
+                
+                vorticity = region[vorticity_var].sel(level=level_850)
+            else:
+                vorticity = region[vorticity_var]
+            
+            # Проверяем, что массив не пустой
             if vorticity.size == 0:
                 logger.warning("Empty vorticity array, cannot calculate maximum")
                 return None
             
-            # Check if we got NaN values
+            # Проверяем наличие NaN значений
             if np.isnan(vorticity).all():
                 logger.warning("All vorticity values are NaN, cannot calculate maximum")
                 return None
                 
-            # Use np.nanmax to ignore NaN values
+            # Используем np.nanmax для игнорирования NaN значений
             max_vorticity = float(np.nanmax(vorticity.values))
             return max_vorticity
+            
         except Exception as e:
             logger.warning(f"Error calculating max vorticity: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
             return None
     
     def _calculate_max_wind_speed(self, region: xr.Dataset) -> Optional[float]:
@@ -267,55 +285,87 @@ class Cyclone:
         Возвращает:
             Максимальное значение скорости ветра или None, если расчет невозможен.
         """
-        # Проверяем наличие компонентов ветра
-        if ('u' in region or 'u_component_of_wind' in region) and \
-           ('v' in region or 'v_component_of_wind' in region):
-            
-            # Получаем компоненты ветра
-            u_var = 'u' if 'u' in region else 'u_component_of_wind'
-            v_var = 'v' if 'v' in region else 'v_component_of_wind'
-            
-            # Проверяем наличие уровней давления
-            if 'level' in region.dims:
-                # Ищем уровень 850 гПа или ближайший
-                levels = region.level.values
-                level_850 = min(levels, key=lambda x: abs(x - 850))
+        try:
+            # Проверяем наличие компонентов ветра
+            if ('u' in region or 'u_component_of_wind' in region) and \
+               ('v' in region or 'v_component_of_wind' in region):
                 
-                u = region[u_var].sel(level=level_850)
-                v = region[v_var].sel(level=level_850)
-            else:
-                u = region[u_var]
-                v = region[v_var]
-            
-            # Рассчитываем скорость ветра
-            wind_speed = np.sqrt(u**2 + v**2)
-            
-            # Находим максимальное значение
-            max_wind = float(wind_speed.max().values)
-            
-            return max_wind
-        
-        # Проверяем наличие скорости ветра
-        wind_vars = ['wind_speed', 'wspd']
-        for var in wind_vars:
-            if var in region:
-                wind_speed = region[var]
+                # Получаем компоненты ветра
+                u_var = 'u' if 'u' in region else 'u_component_of_wind'
+                v_var = 'v' if 'v' in region else 'v_component_of_wind'
                 
                 # Проверяем наличие уровней давления
-                if 'level' in region.dims and 'level' in wind_speed.dims:
+                if 'level' in region.dims:
                     # Ищем уровень 850 гПа или ближайший
                     levels = region.level.values
                     level_850 = min(levels, key=lambda x: abs(x - 850))
                     
-                    wind_speed = wind_speed.sel(level=level_850)
+                    u = region[u_var].sel(level=level_850)
+                    v = region[v_var].sel(level=level_850)
+                else:
+                    u = region[u_var]
+                    v = region[v_var]
                 
-                # Находим максимальное значение
-                max_wind = float(wind_speed.max().values)
+                # Проверяем, что массивы не пустые
+                if u.size == 0 or v.size == 0:
+                    logger.warning("Empty wind component arrays, cannot calculate wind speed")
+                    return None
                 
+                # Проверяем наличие NaN значений
+                if np.isnan(u).all() or np.isnan(v).all():
+                    logger.warning("All wind component values are NaN, cannot calculate wind speed")
+                    return None
+                
+                # Рассчитываем скорость ветра
+                wind_speed = np.sqrt(u**2 + v**2)
+                
+                # Проверяем, что результат не пустой
+                if wind_speed.size == 0:
+                    logger.warning("Resulting wind speed array is empty")
+                    return None
+                
+                # Находим максимальное значение, игнорируя NaN
+                if np.isnan(wind_speed).all():
+                    logger.warning("All wind speed values are NaN")
+                    return None
+                
+                max_wind = float(np.nanmax(wind_speed.values))
                 return max_wind
-        
-        # Если не нашли данные о ветре
-        return None
+            
+            # Проверяем наличие скорости ветра
+            wind_vars = ['wind_speed', 'wspd']
+            for var in wind_vars:
+                if var in region:
+                    wind_speed = region[var]
+                    
+                    # Проверяем наличие уровней давления
+                    if 'level' in region.dims and 'level' in wind_speed.dims:
+                        # Ищем уровень 850 гПа или ближайший
+                        levels = region.level.values
+                        level_850 = min(levels, key=lambda x: abs(x - 850))
+                        
+                        wind_speed = wind_speed.sel(level=level_850)
+                    
+                    # Проверяем, что массив не пустой
+                    if wind_speed.size == 0:
+                        logger.warning(f"Empty {var} array, cannot calculate maximum")
+                        return None
+                    
+                    # Проверяем наличие NaN значений
+                    if np.isnan(wind_speed).all():
+                        logger.warning(f"All {var} values are NaN, cannot calculate maximum")
+                        return None
+                    
+                    # Находим максимальное значение, игнорируя NaN
+                    max_wind = float(np.nanmax(wind_speed.values))
+                    return max_wind
+            
+            # Если не нашли данные о ветре
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error calculating max wind speed: {str(e)}")
+            return None
     
     def _calculate_radius(self, region: xr.Dataset) -> Optional[float]:
         """
@@ -327,50 +377,80 @@ class Cyclone:
         Возвращает:
             Радиус циклона в километрах или None, если расчет невозможен.
         """
-        # Проверяем наличие переменной давления
-        pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
-        pressure_var = None
-        
-        for var in pressure_vars:
-            if var in region:
-                pressure_var = var
-                break
-        
-        if pressure_var is None:
+        try:
+            # Проверяем наличие переменной давления
+            pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
+            pressure_var = None
+            
+            for var in pressure_vars:
+                if var in region:
+                    pressure_var = var
+                    break
+            
+            if pressure_var is None:
+                logger.warning("No pressure variable found in region dataset")
+                return None
+            
+            # Получаем поле давления
+            pressure_field = region[pressure_var]
+            
+            # Проверяем, что массив не пустой
+            if pressure_field.size == 0:
+                logger.warning("Empty pressure field array, cannot calculate radius")
+                return None
+            
+            # Проверяем наличие NaN значений
+            if np.isnan(pressure_field).all():
+                logger.warning("All pressure field values are NaN, cannot calculate radius")
+                return None
+            
+            # Находим внешнюю замкнутую изобару
+            pressure_increment = 2.0  # гПа
+            max_radius = 0.0
+            
+            for p_threshold in np.arange(self.central_pressure, 
+                                        self.central_pressure + 20, 
+                                        pressure_increment):
+                # Создаем контур на этом уровне давления
+                mask = pressure_field <= p_threshold
+                
+                # Проверяем, что маска не пустая
+                if mask.size == 0 or not mask.any():
+                    logger.debug(f"Empty or all-False mask at pressure threshold {p_threshold} hPa")
+                    break
+                
+                # Проверяем, замкнут ли контур
+                if not self._is_contour_closed(mask):
+                    break
+                
+                # Рассчитываем эквивалентный радиус
+                # Приблизительная площадь в км²
+                try:
+                    lat_mean = np.nanmean(region.latitude)
+                    lat_km = 111.0  # 1 градус широты ≈ 111 км
+                    lon_km = 111.0 * np.cos(np.radians(lat_mean))  # 1 градус долготы зависит от широты
+                    
+                    # Площадь в км²
+                    mask_sum = mask.sum().values
+                    if mask_sum > 0:
+                        area = float(mask_sum) * lat_km * lon_km
+                        
+                        # Радиус в км
+                        radius = np.sqrt(area / np.pi)
+                        max_radius = radius
+                    else:
+                        logger.debug(f"Mask sum is zero at pressure threshold {p_threshold} hPa")
+                except Exception as e:
+                    logger.warning(f"Error calculating radius at threshold {p_threshold}: {str(e)}")
+                    continue
+            
+            return max_radius if max_radius > 0 else None
+            
+        except Exception as e:
+            logger.warning(f"Error calculating cyclone radius: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
             return None
-        
-        # Получаем поле давления
-        pressure_field = region[pressure_var]
-        
-        # Находим внешнюю замкнутую изобару
-        pressure_increment = 2.0  # гПа
-        max_radius = 0.0
-        
-        for p_threshold in np.arange(self.central_pressure, 
-                                    self.central_pressure + 20, 
-                                    pressure_increment):
-            # Создаем контур на этом уровне давления
-            mask = pressure_field <= p_threshold
-            
-            # Проверяем, замкнут ли контур
-            if not self._is_contour_closed(mask):
-                break
-            
-            # Рассчитываем эквивалентный радиус
-            # Приблизительная площадь в км²
-            lat_mean = np.mean(region.latitude)
-            lat_km = 111.0  # 1 градус широты ≈ 111 км
-            lon_km = 111.0 * np.cos(np.radians(lat_mean))  # 1 градус долготы зависит от широты
-            
-            # Площадь в км²
-            area = float(mask.sum().values) * lat_km * lon_km
-            
-            # Радиус в км
-            radius = np.sqrt(area / np.pi)
-            
-            max_radius = radius
-        
-        return max_radius
     
     def _is_contour_closed(self, mask: xr.DataArray) -> bool:
         """
@@ -479,48 +559,103 @@ class Cyclone:
         Возвращает:
             Градиент давления в гПа/100км или None, если расчет невозможен.
         """
-        # Проверяем наличие переменной давления
-        pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
-        pressure_var = None
-        
-        for var in pressure_vars:
-            if var in region:
-                pressure_var = var
-                break
-        
-        if pressure_var is None:
+        try:
+            # Проверяем наличие переменной давления
+            pressure_vars = ['mean_sea_level_pressure', 'msl', 'psl', 'slp']
+            pressure_var = None
+            
+            for var in pressure_vars:
+                if var in region:
+                    pressure_var = var
+                    break
+            
+            if pressure_var is None:
+                logger.warning("No pressure variable found in region dataset")
+                return None
+            
+            # Получаем поле давления
+            pressure_field = region[pressure_var]
+            
+            # Проверяем, что массив не пустой
+            if pressure_field.size == 0:
+                logger.warning("Empty pressure field array, cannot calculate pressure gradient")
+                return None
+            
+            # Проверяем наличие NaN значений
+            if np.isnan(pressure_field).all():
+                logger.warning("All pressure field values are NaN, cannot calculate pressure gradient")
+                return None
+                
+            # Проверяем размер массива - нужно минимум 2x2 точки для расчета градиента
+            if pressure_field.shape[0] < 2 or pressure_field.shape[1] < 2:
+                logger.warning(f"Pressure field array too small for gradient calculation: {pressure_field.shape}")
+                return None
+            
+            # Заменяем NaN значения на среднее для расчета градиента
+            pressure_values = pressure_field.values.copy()
+            if np.isnan(pressure_values).any():
+                # Заменяем NaN на среднее значение
+                mean_val = np.nanmean(pressure_values)
+                pressure_values = np.nan_to_num(pressure_values, nan=mean_val)
+            
+            # Рассчитываем градиенты
+            grad_y, grad_x = np.gradient(pressure_values)
+            
+            # Проверяем на наличие данных в градиентах
+            if grad_x.size == 0 or grad_y.size == 0:
+                logger.warning("Empty gradient arrays")
+                return None
+            
+            # Рассчитываем величину градиента
+            grad_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+            
+            # Проверяем на наличие данных в величине градиента
+            if grad_magnitude.size == 0 or np.isnan(grad_magnitude).all():
+                logger.warning("Empty or all-NaN gradient magnitude array")
+                return None
+            
+            # Находим максимальное значение, игнорируя NaN
+            max_grad = float(np.nanmax(grad_magnitude))
+            
+            # Проверяем наличие широты и долготы
+            if region.latitude.size == 0 or region.longitude.size == 0:
+                logger.warning("Empty latitude or longitude arrays")
+                return None
+            
+            # Преобразуем в гПа/100км
+            try:
+                lat_mean = np.nanmean(region.latitude)
+                
+                # Проверяем, что есть минимум 2 точки для расчета расстояния
+                if region.latitude.size < 2 or region.longitude.size < 2:
+                    # Используем стандартное значение для сетки
+                    grid_spacing_km = 25.0  # Стандартное значение для сетки 0.25 градуса
+                else:
+                    lat_spacing = float(np.nanmean(np.diff(region.latitude.values)))
+                    lon_spacing = float(np.nanmean(np.diff(region.longitude.values)))
+                    
+                    lat_km = 111.0  # 1 градус широты ≈ 111 км
+                    lon_km = 111.0 * np.cos(np.radians(lat_mean))  # 1 градус долготы зависит от широты
+                    
+                    dx_km = lon_spacing * lon_km
+                    dy_km = lat_spacing * lat_km
+                    
+                    # Среднее расстояние между точками в км
+                    grid_spacing_km = np.mean([dx_km, dy_km])
+                
+                # Преобразуем градиент в гПа/100км
+                gradient_hPa_per_100km = max_grad * (100.0 / grid_spacing_km)
+                
+                return gradient_hPa_per_100km
+            except Exception as e:
+                logger.warning(f"Error converting gradient to hPa/100km: {str(e)}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Error calculating pressure gradient: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
             return None
-        
-        # Получаем поле давления
-        pressure_field = region[pressure_var]
-        
-        # Рассчитываем градиенты
-        grad_y, grad_x = np.gradient(pressure_field.values)
-        
-        # Рассчитываем величину градиента
-        grad_magnitude = np.sqrt(grad_x**2 + grad_y**2)
-        
-        # Находим максимальное значение
-        max_grad = float(np.max(grad_magnitude))
-        
-        # Преобразуем в гПа/100км
-        lat_mean = np.mean(region.latitude)
-        lat_spacing = float(np.mean(np.diff(region.latitude.values)))
-        lon_spacing = float(np.mean(np.diff(region.longitude.values)))
-        
-        lat_km = 111.0  # 1 градус широты ≈ 111 км
-        lon_km = 111.0 * np.cos(np.radians(lat_mean))  # 1 градус долготы зависит от широты
-        
-        dx_km = lon_spacing * lon_km
-        dy_km = lat_spacing * lat_km
-        
-        # Среднее расстояние между точками в км
-        grid_spacing_km = np.mean([dx_km, dy_km])
-        
-        # Преобразуем градиент в гПа/100км
-        gradient_hPa_per_100km = max_grad * (100.0 / grid_spacing_km)
-        
-        return gradient_hPa_per_100km
     
     def update(self, new_latitude: float, new_longitude: float, 
               new_time: Union[str, datetime, pd.Timestamp], new_pressure: float,

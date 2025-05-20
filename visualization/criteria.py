@@ -15,12 +15,146 @@ import cartopy.feature as cfeature
 from pathlib import Path
 import logging
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Union, Any
+from typing import Dict, Optional, Tuple, Union, Any, List
+import matplotlib.gridspec as gridspec
 
 from .mappers import create_arctic_map, save_figure
 
+# Dictionary to map criterion names to their respective plot functions
+CRITERION_PLOT_FUNCTIONS = {}
+
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+def format_timestep(time_step):
+    # Проверяем тип данных
+    if isinstance(time_step, np.datetime64):
+        # Метод 1: Преобразование через строку (простой и не требует доп. библиотек)
+        dt_str = str(time_step)
+        if 'T' in dt_str:
+            date_part = dt_str.split('T')[0]  # Получаем '2010-01-01'
+            time_part = dt_str.split('T')[1]  # Получаем '00:00:00.000000000'
+            hour_part = time_part.split(':')[0]  # Получаем '00'
+            return f"{date_part}_{hour_part}"
+        
+        # Метод 2: Через datetime (если первый метод не сработал)
+        try:
+            dt_obj = time_step.astype('datetime64[s]').item()  # Преобразуем в Python datetime
+            return dt_obj.strftime('%Y-%m-%d_%H')
+        except (AttributeError, ValueError):
+            pass
+        
+    # Обработка других типов временных меток
+    elif hasattr(time_step, 'strftime'):  # Для объектов datetime
+        return time_step.strftime('%Y-%m-%d_%H')
+    
+    elif isinstance(time_step, str):  # Для строковых представлений
+        if 'T' in time_step:  # ISO формат
+            date_part = time_step.split('T')[0]
+            time_part = time_step.split('T')[1]
+            hour_part = time_part[:2] if ':' in time_part else time_part
+            return f"{date_part}_{hour_part}"
+    
+    # Fallback for other cases
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return timestamp
+
+# Register plot functions in the dictionary
+def register_plot_functions():
+    global CRITERION_PLOT_FUNCTIONS
+    CRITERION_PLOT_FUNCTIONS = {
+        'pressure_laplacian': plot_laplacian_field,
+        'vorticity': plot_vorticity_field,
+        'wind_threshold': plot_wind_field,
+        'closed_contour': plot_closed_contour_field,
+        'pressure': plot_pressure_field
+    }
+
+def plot_combined_criteria(criteria_data: Dict[str, Dict], 
+                          time_step: Any,
+                          output_dir: Union[str, Path]) -> Path:
+    """
+    Creates a combined visualization of multiple criteria fields on a single plot.
+    
+    Arguments:
+        criteria_data: Dictionary mapping criterion names to their data dictionaries.
+                      Each data dictionary should contain all necessary parameters for the
+                      respective plot function.
+        time_step: Time step for the data (used in filename and title)
+        output_dir: Directory to save the output image
+        
+    Returns:
+        Path to the saved figure
+    """
+    # Create output directory if it doesn't exist
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Format the timestamp for the filename
+    timestamp = format_timestep(time_step)
+    
+    # Count the number of criteria to plot
+    num_criteria = len(criteria_data)
+    
+    if num_criteria == 0:
+        logger.warning("No criteria data provided for combined plot")
+        return Path(output_dir)
+    
+    # Create figure with subplots based on number of criteria
+    if num_criteria <= 2:
+        fig = plt.figure(figsize=(18, 10))
+        gs = gridspec.GridSpec(1, num_criteria, figure=fig)
+    elif num_criteria <= 4:
+        fig = plt.figure(figsize=(18, 16))
+        gs = gridspec.GridSpec(2, 2, figure=fig)
+    else:
+        # For 5 or more criteria, use a 3x2 grid
+        fig = plt.figure(figsize=(18, 24))
+        gs = gridspec.GridSpec(3, 2, figure=fig)
+    
+    # Add a main title for the entire figure
+    if hasattr(time_step, 'strftime'):
+        time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+    else:
+        time_str = str(time_step)
+    
+    fig.suptitle(f'Combined Criteria Fields - {time_str}', fontsize=16, fontweight='bold')
+    
+    # Plot each criterion in its subplot
+    for i, (criterion_name, data) in enumerate(criteria_data.items()):
+        # Create subplot with Arctic projection
+        ax = plt.subplot(gs[i], projection=ccrs.NorthPolarStereo())
+        
+        # Get the plot function for this criterion
+        if criterion_name in CRITERION_PLOT_FUNCTIONS:
+            plot_func = CRITERION_PLOT_FUNCTIONS[criterion_name]
+            
+            # Add the axes to the data dictionary
+            data['ax'] = ax
+            data['show_title'] = True  # Show titles in the subplots
+            
+            # Call the plot function with the data
+            try:
+                plot_func(**data)
+            except Exception as e:
+                logger.error(f"Error plotting {criterion_name}: {str(e)}")
+                ax.text(0.5, 0.5, f"Error plotting {criterion_name}", 
+                       transform=ax.transAxes, ha='center', va='center')
+        else:
+            logger.warning(f"No plot function found for criterion: {criterion_name}")
+            ax.text(0.5, 0.5, f"Unknown criterion: {criterion_name}", 
+                   transform=ax.transAxes, ha='center', va='center')
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave room for the suptitle
+    
+    # Save the combined figure
+    output_file = output_path / f"combined_criteria_{timestamp}.png"
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    logger.info(f"Saved combined criteria visualization to {output_file}")
+    return output_file
 
 def plot_criterion_field(field_data: np.ndarray, 
                         lats: np.ndarray, 
@@ -61,13 +195,7 @@ def plot_criterion_field(field_data: np.ndarray,
     # Create a figure with Arctic projection
     fig, ax = create_arctic_map(min_latitude=min_latitude, figsize=figsize)
     
-    # Format the timestamp for the filename
-    if isinstance(time_step, str):
-        timestamp = time_step.replace(':', '').replace('-', '').replace(' ', '_')
-    elif hasattr(time_step, 'strftime'):
-        timestamp = time_step.strftime('%Y%m%d_%H%M%S')
-    else:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = format_timestep(time_step)
     
     # Define the transform for data coordinates
     transform = ccrs.PlateCarree()
@@ -163,7 +291,9 @@ def plot_laplacian_field(laplacian: np.ndarray,
                         lons: np.ndarray,
                         threshold: float,
                         time_step: Any,
-                        output_dir: Union[str, Path]) -> Path:
+                        output_dir: Union[str, Path],
+                        ax: Optional[plt.Axes] = None,
+                        show_title: bool = True) -> Path:
     """
     Visualizes a laplacian field with threshold highlighted and isolines.
     """
@@ -174,13 +304,7 @@ def plot_laplacian_field(laplacian: np.ndarray,
     # Create a figure with Arctic projection
     fig, ax = create_arctic_map(min_latitude=65.0, figsize=(10, 8))
     
-    # Format the timestamp for the filename
-    if isinstance(time_step, str):
-        timestamp = time_step.replace(':', '').replace('-', '').replace(' ', '_')
-    elif hasattr(time_step, 'strftime'):
-        timestamp = time_step.strftime('%Y%m%d_%H%M%S')
-    else:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = format_timestep(time_step)
     
     # Define the transform for data coordinates
     transform = ccrs.PlateCarree()
@@ -346,7 +470,9 @@ def plot_vorticity_field(vorticity: np.ndarray,
                         lons: np.ndarray,
                         threshold: float,
                         time_step: Any,
-                        output_dir: Union[str, Path]) -> Path:
+                        output_dir: Union[str, Path],
+                        ax: Optional[plt.Axes] = None,
+                        show_title: bool = True) -> Path:
     """
     Visualizes a vorticity field with threshold highlighted.
     
@@ -377,7 +503,9 @@ def plot_pressure_field(pressure: np.ndarray,
                       lats: np.ndarray, 
                       lons: np.ndarray,
                       time_step: Any,
-                      output_dir: Union[str, Path]) -> Path:
+                      output_dir: Union[str, Path],
+                      ax: Optional[plt.Axes] = None,
+                      show_title: bool = True) -> Path:
     """
     Visualizes a pressure field with isobars at 5 hPa intervals for meteorological analysis.
     
@@ -395,16 +523,13 @@ def plot_pressure_field(pressure: np.ndarray,
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Create a figure with Arctic projection
-    fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
-    
-    # Format the timestamp for the filename
-    if isinstance(time_step, str):
-        timestamp = time_step.replace(':', '').replace('-', '').replace(' ', '_')
-    elif hasattr(time_step, 'strftime'):
-        timestamp = time_step.strftime('%Y%m%d_%H%M%S')
+    # Create a figure with Arctic projection if ax is not provided
+    if ax is None:
+        fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
     else:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fig = ax.figure
+    
+    timestamp = format_timestep(time_step)
     
     # Convert Pa to hPa for better readability
     pressure_hpa = pressure 
@@ -566,7 +691,9 @@ def plot_wind_field(u_wind: np.ndarray,
                    lons: np.ndarray,
                    threshold: float,
                    time_step: Any,
-                   output_dir: Union[str, Path]) -> Path:
+                   output_dir: Union[str, Path],
+                   ax: Optional[plt.Axes] = None,
+                   show_title: bool = True) -> Path:
     """
     Visualizes wind field with vectors and speed.
     
@@ -589,16 +716,13 @@ def plot_wind_field(u_wind: np.ndarray,
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Create a figure with Arctic projection
-    fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
-    
-    # Format the timestamp for the filename
-    if isinstance(time_step, str):
-        timestamp = time_step.replace(':', '').replace('-', '').replace(' ', '_')
-    elif hasattr(time_step, 'strftime'):
-        timestamp = time_step.strftime('%Y%m%d_%H%M%S')
+    # Create a figure with Arctic projection if ax is not provided
+    if ax is None:
+        fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
     else:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fig = ax.figure
+    
+    timestamp = format_timestep(time_step)
     
     # Define the transform for data coordinates
     transform = ccrs.PlateCarree()
@@ -725,32 +849,45 @@ def plot_wind_field(u_wind: np.ndarray,
         gl.top_labels = False
         gl.right_labels = False
         
-        # Добавляем заголовок с временной меткой
-        if hasattr(time_step, 'strftime'):
-            time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+        # Добавляем заголовок с временной меткой если show_title True
+        if show_title:
+            if hasattr(time_step, 'strftime'):
+                time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+            else:
+                time_str = str(time_step)
+            
+            ax.set_title(f'Wind Field (Threshold: {threshold} m/s)\n{time_str}', 
+                     fontsize=12, fontweight='bold')
+        
+        # Добавляем пояснение к карте только если это отдельный график
+        if ax is None:
+            plt.figtext(0.02, 0.02, f'Red contour: Wind speed ≥ {threshold} m/s', 
+                        fontsize=8, ha='left', color='darkred')
         else:
-            time_str = str(time_step)
+            # Add a text annotation to the axes instead
+            ax.text(0.02, 0.02, f'Wind ≥ {threshold} m/s', 
+                   fontsize=8, ha='left', color='darkred', transform=ax.transAxes)
         
-        plt.title(f'Wind Field (Threshold: {threshold} m/s)\n{time_str}', 
-                 fontsize=12, fontweight='bold')
-        
-        # Добавляем пояснение к карте
-        plt.figtext(0.02, 0.02, f'Red contour: Wind speed ≥ {threshold} m/s', 
-                    fontsize=8, ha='left', color='darkred')
-        
-        # Сохраняем изображение
-        output_file = output_path / f"wind_{timestamp}.png"
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        logger.info(f"Saved wind field visualization to {output_file}")
+        # Сохраняем изображение только если ax is None (standalone plot)
+        if ax is None:
+            output_file = output_path / f"wind_{timestamp}.png"
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            logger.info(f"Saved wind field visualization to {output_file}")
+            plt.close(fig)
+        else:
+            output_file = output_path / f"wind_{timestamp}.png"
     except Exception as e:
         logger.error(f"Error creating wind field plot: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())  # Добавляем полный стек ошибки для диагностики
-        output_file = output_path / f"wind_{timestamp}_error.png"
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        logger.info(f"Saved error visualization to {output_file}")
+        if ax is None:
+            output_file = output_path / f"wind_{timestamp}_error.png"
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            logger.info(f"Saved error visualization to {output_file}")
+            plt.close(fig)
+        else:
+            output_file = output_path / f"wind_{timestamp}_error.png"
     
-    plt.close(fig)
     return output_file
 
 
@@ -759,7 +896,9 @@ def plot_closed_contour_field(pressure: np.ndarray,
                             lats: np.ndarray, 
                             lons: np.ndarray,
                             time_step: Any,
-                            output_dir: Union[str, Path]) -> Path:
+                            output_dir: Union[str, Path],
+                            ax: Optional[plt.Axes] = None,
+                            show_title: bool = True) -> Path:
     """
     Visualizes closed pressure contours.
     
@@ -778,8 +917,11 @@ def plot_closed_contour_field(pressure: np.ndarray,
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Create a figure with Arctic projection
-    fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
+    # Create a figure with Arctic projection if ax is not provided
+    if ax is None:
+        fig, ax = create_arctic_map(min_latitude=60.0, figsize=(10, 8))
+    else:
+        fig = ax.figure
     
     # Format the timestamp for the filename
     if isinstance(time_step, str):
@@ -814,18 +956,26 @@ def plot_closed_contour_field(pressure: np.ndarray,
                    colors=['red'],
                    alpha=0.3)
     
-    # Add title with timestamp
-    if hasattr(time_step, 'strftime'):
-        time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+    # Add title with timestamp if show_title is True
+    if show_title:
+        if hasattr(time_step, 'strftime'):
+            time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+        else:
+            time_str = str(time_step)
+        
+        ax.set_title(f'Closed Pressure Contours\n{time_str}')
+    
+    # Save the figure if ax is None (standalone plot)
+    if ax is None:
+        output_file = output_path / f"closed_contour_{timestamp}.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        logger.info(f"Saved closed contour visualization to {output_file}")
+        return output_file
     else:
-        time_str = str(time_step)
-    
-    plt.title(f'Closed Pressure Contours\n{time_str}')
-    
-    # Save the figure
-    output_file = output_path / f"closed_contour_{timestamp}.png"
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    
-    logger.info(f"Saved closed contour visualization to {output_file}")
-    return output_file
+        # If ax is provided, we're in a combined plot, so just return the path
+        return Path(output_dir) / f"closed_contour_{timestamp}.png"
+
+# Call the registration function after all plot functions are defined
+register_plot_functions()

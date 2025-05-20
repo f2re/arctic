@@ -108,7 +108,7 @@ dataset = data_manager.get_data(
 )
 
 # Инициализация детектора циклонов
-detector = CycloneDetector(min_latitude=70.0)
+detector = CycloneDetector(min_latitude=65.0)
 
 # Установка критериев обнаружения
 detector.set_criteria(["pressure_minimum", "vorticity"])

@@ -1,0 +1,144 @@
+# Windsurf Configuration for Arctic Cyclone Research Project
+
+## Core Configuration
+
+- **Version**: `v1.0`
+- **Project Type**: `python_application`
+- **Code Style**: `clean_and_maintainable`
+
+---
+
+## Project Structure and Specifics
+
+- **Project Name**: `arctic_cyclone_analyzer` (derived from the root directory `arctic_cyclone/` [1])
+- **Project Domain**: Meteorological research focused on arctic cyclones, their detection, analysis, and dynamics [3]. The project aims to determine the role of sea ice surface properties in the dynamics of Arctic cyclones and their interactions with the summer Arctic environment [3].
+- **Key Data Source**: ERA5 reanalysis data [4]. The system includes downloading and processing this data. Processing may involve converting to formats such as Zarr or HDF5 [4].
+- **Scientific Objectives**: Detection and analysis of Arctic cyclones based on meteorological parameters such as sea level pressure, closed isobaric contours, vorticity (e.g., at 850 hPa), wind speed, and other criteria based on scientific research [3, 5].
+- **Project Structure Reference**: The canonical project structure is defined in the `structure.md` file [1].
+    - The AI assistant **must** refer to `structure.md` to understand the organization of modules and their responsibilities [1].
+    - If any development task leads to changes in the file structure (e.g., adding, deleting, or renaming files/directories), the AI assistant **must** update `structure.md` accordingly to reflect these changes.
+- **Modularity**: The project emphasizes a strictly modular structure. Functionalities are organized into separate packages and modules by purpose (e.g., data collection, detection algorithms, analysis, visualization) [1].
+
+---
+
+## Code Quality Standards
+
+- Maximum file length: **500 lines** (split into modules if needed).
+- Follow existing patterns and project structure [1].
+- Write modular, reusable, and maintainable code.
+- Implement proper error handling mechanisms (see `core/exceptions.py` [1]).
+- Use type hints and annotations where applicable.
+- Add explanatory comments when necessary, especially for non-obvious logic.
+- Avoid code duplication; reuse existing functionality if possible.
+- Prefer simple solutions over complex ones.
+- Keep the codebase clean and organized.
+
+---
+
+## AI Assistant Behavior
+
+1.  Explain your understanding of requirements before performing tasks.
+2.  Ask clarifying questions when requirements are ambiguous or unclear.
+3.  Provide complete, working solutions for each task or bug fix.
+4.  Focus only on relevant areas of the codebase for each task, as specified in `structure.md` [1].
+5.  Debug failing tests with clear explanations and reasoning.
+6.  When asked to analyze or modify code, always clarify which files or modules (according to `structure.md` [1]) are the most relevant context files for the task.
+
+---
+
+## Things to Avoid
+
+- Never generate incomplete or partial solutions unless explicitly requested.
+- Never invent nonexistent functions, APIs, or libraries. Refer to `requirements.txt` for the list of dependencies [1].
+- Never ignore explicit requirements or provided contexts.
+- Never overcomplicate simple tasks or solutions.
+- Never overwrite `.env` files without explicit confirmation.
+- Avoid making changes to project management files such as `mk.sh`, `setup.py`, or `requirements.txt` [1] without explicit direction.
+
+---
+
+## Implementation Guidelines
+
+### General Rules
+
+1.  Always check for existing code (according to `structure.md` [1]) before creating new functionality.
+2.  Avoid major changes to design patterns unless explicitly instructed or necessary for bug fixes.
+
+### Refactoring Rules
+
+1.  Refactor files exceeding **500 lines** to improve readability and maintainability, breaking them into smaller, logically cohesive modules.
+
+### Bug Fixing Rules
+
+1.  Exhaust all options using existing patterns and project technologies before introducing new ones.
+2.  When introducing a new pattern, remove outdated implementations to avoid duplicate logic.
+
+---
+
+### Code Structure and Modularity
+
+1.  **Adherence to `structure.md`**:
+    *   All new code and modifications **must** conform to the established project organization, detailed in `structure.md` [1].
+    *   Understand the purpose of each top-level package:
+        *   `arctic_cyclone/analysis/`: Cyclone analysis capabilities (climatology, comparisons, statistics) [1].
+        *   `arctic_cyclone/core/`: Core system components (configuration, exceptions, logging) [1].
+        *   `arctic_cyclone/data/`: Data management (collection, adapters for ERA5, catalog, handlers) [1, 4].
+        *   `arctic_cyclone/detection/`: Cyclone detection and tracking (algorithms, criteria, tracker, validators) [1, 5].
+        *   `arctic_cyclone/export/`: Data export and publication (various formats like CSV, GeoJSON, NetCDF) [1].
+        *   `arctic_cyclone/models/`: Data models (Cyclone class, classifications, parameters) [1].
+        *   `arctic_cyclone/visualization/`: Visualization tools (maps, heatmaps, tracks) [1].
+2.  **Granular Modularity**:
+    *   Organize code into clearly separated modules grouped by function or responsibility, as shown in `structure.md` [1].
+    *   For example, new detection algorithms should be placed in `arctic_cyclone/detection/algorithms/` and, if appropriate, inherit from `base_algorithm.py` [1].
+    *   New data source adapters go into `arctic_cyclone/data/adapters/` [1].
+3.  **File Length Restriction**:
+    *   Never create a file longer than **500 lines** of code.
+    *   If a file approaches or exceeds this limit, refactor by breaking it into smaller, focused modules.
+4.  **`__init__.py` Files**:
+    *   Use `__init__.py` files appropriately to define package interfaces and manage imports, promoting ease of package use.
+
+---
+
+### Documentation and Explainability
+
+1.  **Updating `README.md`**:
+    *   Update `README.md` [1] when adding new features, changing dependencies (`requirements.txt` [1]), or modifying setup/build steps (related to `mk.sh` or `setup.py` [1]).
+    *   Always use Markdown for documentation and README files.
+2.  **Docstrings**:
+    *   Write docstrings for every function, using Google-style formatting:
+
+    ```
+    def example(param1: int) -> str:
+        """
+        Brief summary of the function.
+
+        Args:
+            param1 (int): Description of the parameter.
+
+        Returns:
+            str: Description of the return value.
+        """
+    ```
+3.  **Inline Comments**:
+    *   Add inline comments explaining non-obvious logic and reasoning behind decisions.
+
+---
+
+## Verification Rule
+
+I am an AI coding assistant that strictly adheres to KISS and SOLID principles, and high code quality standards.
+
+---
+
+## Modular Prompting Process
+
+When interacting with the AI assistant:
+
+1.  Focus on one task at a time for consistent results:
+    *   Good Example: "Update the list records function to add filtering."
+    *   Bad Example: "Update list records, fix API key errors in create row function, and improve documentation."
+2.  Always test after implementing each feature to catch bugs early:
+    *   Create unit tests covering:
+        *   Successful scenarios.
+        *   Edge cases.
+        *   Failure cases.

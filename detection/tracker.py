@@ -597,8 +597,12 @@ class CycloneTracker:
                     continue
                 
                 # Создаем и решаем задачу назначения
-                assignments = self._solve_assignment_problem(
-                    current_cyclones, next_cyclones, time_diff)
+                try:
+                    assignments = self._solve_assignment_problem(
+                        current_cyclones, next_cyclones, time_diff)
+                except ValueError as e:
+                    logger.warning(f"Assignment problem infeasible: {e}")
+                    assignments = []
                 
                 # Применяем назначения
                 for current_idx, next_idx in assignments:
@@ -723,8 +727,11 @@ class CycloneTracker:
                         cost_matrix[i, j] = cost
         
         # Находим оптимальные назначения с помощью венгерского алгоритма
-        from scipy.optimize import linear_sum_assignment
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        try:
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        except ValueError as e:
+            logger.warning(f"Assignment problem infeasible: {e}")
+            return []
         
         # Фильтруем назначения с бесконечной стоимостью
         valid_assignments = []

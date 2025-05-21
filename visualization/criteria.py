@@ -374,7 +374,6 @@ def plot_criterion_field(field_data: np.ndarray,
             time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
         else:
             time_str = str(time_step)
-        
         plt.title(f'{title}\n{time_str}')
         
         # Save the figure
@@ -751,15 +750,12 @@ def plot_vorticity_field(vorticity: np.ndarray,
         plt.figtext(0.02, 0.02, 'Positive values (red) indicate cyclonic circulation in NH', fontsize=8, ha='left')
         
         # Save the image if this is a standalone plot (not embedded)
-        if ax is None:
-            output_file = output_path / f"vorticity_{timestamp}.png"
-            plt.savefig(output_file, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            logger.info(f"Saved vorticity field visualization to {output_file}")
-            return output_file
-        else:
-            # If embedded, just return the path without saving
-            return output_path / f"vorticity_{timestamp}.png"
+        
+        output_file = output_path / f"vorticity_{timestamp}.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Saved vorticity field visualization to {output_file}")
+        return output_file
             
     except Exception as e:
         logger.error(f"Error creating vorticity field plot: {str(e)}")
@@ -1011,37 +1007,39 @@ def plot_wind_field(u_wind: np.ndarray,
         lons_mesh, lats_mesh = lons, lats
     
     try:
-        # Правильная работа с маской для полярных регионов
-        # Создаем маску напрямую в numpy.ma без 2D булевого индексирования
-        arctic_mask = lats_mesh < 60.0  # Маска для данных вне арктического региона
+        # Proper masking for polar region, mirroring vorticity logic
+        arctic_mask = lats_mesh >= 60.0  # True for points within region
+        if not np.all(arctic_mask):
+            masked_speed = np.ma.array(wind_speed, mask=~arctic_mask)
+            masked_u = np.ma.array(u_wind, mask=~arctic_mask)
+            masked_v = np.ma.array(v_wind, mask=~arctic_mask)
+        else:
+            masked_speed = np.ma.masked_invalid(wind_speed)
+            masked_u = np.ma.masked_invalid(u_wind)
+            masked_v = np.ma.masked_invalid(v_wind)
         
-        # Создаем маскированные массивы с явным указанием маски
-        masked_speed = np.ma.array(wind_speed, mask=arctic_mask)
-        masked_u = np.ma.array(u_wind, mask=arctic_mask)
-        masked_v = np.ma.array(v_wind, mask=arctic_mask)
-        
-        # Извлекаем действительные значения для статистики
-        valid_speed = masked_speed.compressed()  # Немаскированные значения как 1D массив
+        # Extract valid values for statistics
+        valid_speed = masked_speed.compressed()  # Unmasked values as 1D array
         
         if len(valid_speed) > 0:
             data_min, data_max = np.percentile(valid_speed.compressed() if hasattr(valid_speed, 'compressed') else valid_speed, [2, 98])
-            # Обеспечиваем корректный диапазон даже с почти постоянными данными
+            # Ensure a proper range even with almost constant data
             if np.isclose(data_min, data_max):
                 data_min = max(0, data_min - 0.1 * abs(data_min))
                 data_max = data_max + 0.1 * abs(data_max) if data_max != 0 else 0.1
             
             logger.debug(f"Valid wind speed range: {data_min:.2f} to {data_max:.2f} m/s")
         else:
-            # Запасной вариант, если нет действительных данных
+            # Fallback if no valid data
             data_min, data_max = 0, threshold * 2 if threshold > 0 else 10
             logger.warning("No valid wind speed data points for contour plot")
         
-        # Создаем уровни с отметкой порогового значения
+        # Create levels with the threshold marked
         levels = np.linspace(data_min, data_max, 5)
         if threshold > data_min and threshold < data_max and threshold not in levels:
             levels = np.sort(np.append(levels, threshold))
         
-        # Создаем заполненный контур для скорости ветра
+        # Create filled contour for wind speed
         contour = ax.contourf(lons_mesh, lats_mesh, masked_speed, 
                              transform=transform,
                              cmap='YlOrRd', 
@@ -1049,13 +1047,13 @@ def plot_wind_field(u_wind: np.ndarray,
                              extend='both',
                              zorder=5)
         
-        # Добавляем цветовую шкалу
+        # Add colorbar
         cbar = plt.colorbar(contour, ax=ax, orientation='horizontal', 
                            pad=0.05, shrink=0.8)
         cbar.set_label('Wind Speed (m/s)', fontsize=10, fontweight='bold')
         cbar.ax.tick_params(labelsize=9)
         
-        # Выделение областей, где скорость ветра превышает пороговое значение
+        # Highlight areas where wind speed exceeds the threshold
         threshold_contour = ax.contour(lons_mesh, lats_mesh, masked_speed,
                                     levels=[threshold],
                                     colors='red',
@@ -1063,38 +1061,38 @@ def plot_wind_field(u_wind: np.ndarray,
                                     transform=transform,
                                     zorder=8)
         
-        # Добавляем векторы ветра (с прореживанием для наглядности)
-        stride = 10  # Регулируем в зависимости от разрешения сетки
+        # Add wind vectors (with thinning for clarity)
+        stride = 10  # Adjust based on grid resolution
         
-        # Прореживаем массивы для стрелок
+        # Thin the arrays for wind vectors
         if lats.ndim == 1 and lons.ndim == 1:
-            # Для 1D координат создаем разреженную сетку
+            # For 1D coordinates, create a thinned meshgrid
             lons_s = lons[::stride]
             lats_s = lats[::stride]
             
-            # Прореживаем 2D массивы ветра
+            # Thin the 2D wind arrays
             u_s = u_wind[::stride, ::stride]
             v_s = v_wind[::stride, ::stride]
             
-            # Создаем сетку для прореженных точек
+            # Create a meshgrid for the thinned points
             lon_mesh_s, lat_mesh_s = np.meshgrid(lons_s, lats_s)
         else:
-            # Если координаты уже 2D, просто прореживаем все массивы
+            # If coordinates are already 2D, just thin all arrays
             lon_mesh_s = lons_mesh[::stride, ::stride]
             lat_mesh_s = lats_mesh[::stride, ::stride]
             u_s = u_wind[::stride, ::stride]
             v_s = v_wind[::stride, ::stride]
         
-        # Добавляем маску для стрелок ветра, чтобы показать только точки в Арктике
+        # Add a mask for wind vectors to show only points in the Arctic
         quiver_mask = lat_mesh_s >= 60.0
         
-        # Маскируем точки вне Арктики с помощью np.where
+        # Mask points outside the Arctic using np.where
         q_lons = np.where(quiver_mask, lon_mesh_s, np.nan)
         q_lats = np.where(quiver_mask, lat_mesh_s, np.nan)
         q_u = np.where(quiver_mask, u_s, np.nan)
         q_v = np.where(quiver_mask, v_s, np.nan)
         
-        # Рисуем стрелки ветра
+        # Plot wind vectors
         ax.quiver(q_lons, q_lats, q_u, q_v,
                 transform=transform, 
                 scale=500, 
@@ -1104,24 +1102,24 @@ def plot_wind_field(u_wind: np.ndarray,
                 alpha=0.5,
                 zorder=6)
         
-        # Добавляем географические объекты
+        # Add geographic features
         ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.8, edgecolor='black', zorder=10)
         ax.add_feature(cfeature.BORDERS.with_scale('50m'), linewidth=0.5, edgecolor='gray', zorder=9)
         ax.add_feature(cfeature.LAKES.with_scale('50m'), facecolor='lightblue', edgecolor='black', zorder=8, alpha=0.5)
         
-        # Добавляем круговую границу для полярной стереографической проекции
+        # Add a circular boundary for polar stereographic projection
         theta = np.linspace(0, 2*np.pi, 100)
         center, radius = [0.5, 0.5], 0.5
         verts = np.vstack([np.sin(theta), np.cos(theta)]).T
         circle = mpath.Path(verts * radius + center)
         ax.set_boundary(circle, transform=ax.transAxes)
         
-        # Добавляем координатную сетку
+        # Add grid lines for geographic reference
         gl = ax.gridlines(crs=transform, draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
         gl.top_labels = False
         gl.right_labels = False
         
-        # Добавляем заголовок с временной меткой если show_title True
+        # Add title with timestamp if show_title is True
         if show_title:
             if hasattr(time_step, 'strftime'):
                 time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
@@ -1131,35 +1129,24 @@ def plot_wind_field(u_wind: np.ndarray,
             ax.set_title(f'Wind Field (Threshold: {threshold} m/s)\n{time_str}', 
                      fontsize=12, fontweight='bold')
         
-        # Добавляем пояснение к карте только если это отдельный график
-        if ax is None:
-            plt.figtext(0.02, 0.02, f'Red contour: Wind speed ≥ {threshold} m/s', 
-                        fontsize=8, ha='left', color='darkred')
-        else:
-            # Add a text annotation to the axes instead
-            ax.text(0.02, 0.02, f'Wind ≥ {threshold} m/s', 
-                   fontsize=8, ha='left', color='darkred', transform=ax.transAxes)
+        # Explanation about wind threshold
+        plt.figtext(0.02, 0.02, f'Red contour: Wind speed ≥ {threshold} m/s', fontsize=8, ha='left', color='darkred')
         
-        # Сохраняем изображение только если ax is None (standalone plot)
-        if ax is None:
-            output_file = output_path / f"wind_{timestamp}.png"
-            plt.savefig(output_file, dpi=300, bbox_inches='tight')
-            logger.info(f"Saved wind field visualization to {output_file}")
-            plt.close(fig)
-        else:
-            output_file = output_path / f"wind_{timestamp}.png"
+        # Save the figure if ax is None (standalone plot)
+        
+        output_file = output_path / f"wind_{timestamp}.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved wind field visualization to {output_file}")
+        plt.close(fig)
     except Exception as e:
         logger.error(f"Error creating wind field plot: {str(e)}")
         import traceback
-        logger.error(traceback.format_exc())  # Добавляем полный стек ошибки для диагностики
-        if ax is None:
-            output_file = output_path / f"wind_{timestamp}_error.png"
-            plt.savefig(output_file, dpi=300, bbox_inches='tight')
-            logger.info(f"Saved error visualization to {output_file}")
-            plt.close(fig)
-        else:
-            output_file = output_path / f"wind_{timestamp}_error.png"
-    
+        logger.error(traceback.format_exc())  # Add full error stack for diagnostics
+        output_file = output_path / f"wind_{timestamp}_error.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved error visualization to {output_file}")
+        plt.close(fig)
+
     return output_file
 
 
@@ -1238,16 +1225,13 @@ def plot_closed_contour_field(pressure: np.ndarray,
         ax.set_title(f'Closed Pressure Contours\n{time_str}')
     
     # Save the figure if ax is None (standalone plot)
-    if ax is None:
-        output_file = output_path / f"closed_contour_{timestamp}.png"
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        plt.close(fig)
-        
-        logger.info(f"Saved closed contour visualization to {output_file}")
-        return output_file
-    else:
-        # If ax is provided, we're in a combined plot, so just return the path
-        return Path(output_dir) / f"closed_contour_{timestamp}.png"
+    
+    output_file = output_path / f"closed_contour_{timestamp}.png"
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    logger.info(f"Saved closed contour visualization to {output_file}")
+    return output_file
 
 # Call the registration function after all plot functions are defined
 register_plot_functions()

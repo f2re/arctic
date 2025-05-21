@@ -65,4 +65,8 @@
 ├── config.yaml                 # Configuration file for the application
 ├── README.md                   # Project documentation and overview
 ├── requirements.txt            # Python dependencies list
+├── setup.py                    # Setup script for package installation
+├── mk.sh                       # Makefile for project automation
+├── output/                     # Directory for output data and results
+├── .gitignore                  # Git ignore file for version control
 └── structure.md                # This file - describes project structure

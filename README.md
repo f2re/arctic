@@ -39,21 +39,41 @@ pip install -r requirements.txt
 
 ## Архитектура системы
 
-Система имеет модульную архитектуру:
+См. подробную и актуальную структуру в файле [`structure.md`](structure.md) — он является каноническим источником для организации модулей и их ответственности.
 
+Основные директории:
 - **analysis/**: Инструменты анализа циклонов (климатология, сравнения, статистика)
 - **core/**: Базовые компоненты (конфигурация, логирование, обработка исключений)
-- **data/**: Управление данными (получение, адаптеры для источников, кэширование, обработка)
-- **detection/**: Алгоритмы и критерии обнаружения и отслеживания циклонов
-  - **algorithms/**: Реализации алгоритмов обнаружения
-  - **criteria/**: Критерии обнаружения (давление, завихренность, градиент, лапласиан, ветер)
-- **export/**: Экспорт данных в различные форматы (CSV, GeoJSON, NetCDF)
-- **models/**: Модели данных циклонов и их параметров
-- **visualization/**: Визуализация данных циклонов (карты, треки, тепловые карты, критерии)
+- **data/**: Получение, адаптеры (ERA5 и др.), кэширование, обработка, каталог, менеджер учётных данных
+- **detection/**: Алгоритмы и критерии обнаружения и отслеживания циклонов (pressure minima, vorticity, и др.)
+- **export/**: Экспорт данных (CSV, GeoJSON, NetCDF)
+- **models/**: Модели данных циклонов и параметров
+- **visualization/**: Визуализация (карты, треки, тепловые карты, критерии)
+- **main.py**: Точка входа
+- **config.yaml**: Конфигурация
+- **requirements.txt**: Зависимости
+- **structure.md**: Описание структуры
+- **README.md**: Документация
+
+> **Важно:** Все новые функции и изменения должны соответствовать структуре [`structure.md`](structure.md) и стандартам кодирования проекта.
 
 Подробная структура проекта описана в файле `structure.md`.
 
 ## Руководство пользователя
+
+### Быстрый старт и базовый рабочий процесс
+
+### FAQ и устранение неполадок
+
+- **Ошибка: Переменная давления не найдена в наборе данных**
+  - Проверьте корректность разделения переменных на surface/pressure_levels в конфиге.
+  - Убедитесь, что данные загружаются с нужным 'dataset_type'.
+- **Ошибка авторизации ERA5**
+  - Проверьте корректность API-ключа и файла `.cdsapirc`.
+- **Файл превышает 500 строк**
+  - Разделите код на модули по назначению, обновите `structure.md`.
+
+---
 
 ### Базовый рабочий процесс
 
@@ -144,6 +164,14 @@ plot_cyclone_tracks(filtered_tracks, region, 'cyclone_tracks.png')
 
 ### Настройка источников данных
 
+**Обработка ERA5:**
+- Переменные поверхности (например, 'msl' — давление на уровне моря) и переменные на уровнях давления (например, 'z', 'u', 'v', 't', 'vo') запрашиваются из разных подмножеств ERA5 и требуют разных параметров 'dataset_type'.
+- В конфиге переменные делятся на две группы: surface и pressure_levels.
+- Запрос данных делается отдельно для каждой группы, затем данные объединяются (merge).
+- Пример в `data/adapters/era5.py` и соответствующих обработчиках.
+- Подробнее см. комментарии в коде и [`structure.md`](structure.md).
+
+
 Пример конфигурации для источника данных ERA5:
 
 ```python
@@ -183,7 +211,94 @@ era5_data = data_manager.get_data(
 print(f"Загружены данные размерностью: {era5_data.dims}")
 ```
 
-### Добавление нового критерия обнаружения
+### Добавление нового критерия обнаружения и визуализации
+
+#### 1. Создание нового критерия
+
+1. Создайте новый файл, например, `my_criterion.py` в директории [`detection/criteria`](detection/criteria/).
+2. Класс критерия должен наследоваться от `BaseCriterion` и реализовывать метод `apply`.
+
+```python
+from detection.criteria import BaseCriterion
+from core.exceptions import DetectionError
+import xarray as xr
+import numpy as np
+
+class MyCustomCriterion(BaseCriterion):
+    def __init__(self, threshold: float = 1000.0):
+        self.threshold = threshold
+    def apply(self, dataset: xr.Dataset, time_step):
+        # Логика обнаружения
+        ...
+```
+
+#### 2. Регистрация критерия в системе
+
+1. Зарегистрируйте новый критерий через менеджер критериев:
+```python
+from detection.criteria import CriteriaManager
+from detection.tracker import CycloneDetector
+from detection.criteria.my_criterion import MyCustomCriterion
+
+criteria_manager = CriteriaManager()
+criteria_manager.register_criterion("my_custom", MyCustomCriterion(threshold=995.0))
+
+detector = CycloneDetector(min_latitude=70.0)
+detector.criteria_manager = criteria_manager
+# Установите активные критерии
+ detector.set_criteria(["my_custom"])
+```
+
+#### 3. Добавление критерия в конфигурацию
+
+1. В `config.yaml` добавьте новый критерий в секцию `detection > criteria`:
+```yaml
+detection:
+  criteria:
+    my_custom:
+      enabled: true
+      threshold: 995.0
+```
+2. Убедитесь, что ваш критерий корректно читает параметры из конфигурации через `ConfigManager`.
+
+#### 4. Добавление функции визуализации выбранного критерия
+
+1. Создайте новый файл, например, `my_criterion_plot.py` в [`visualization/`](visualization/) или добавьте функцию в существующий модуль визуализации.
+2. Функция должна принимать результаты работы критерия (например, список кандидатов или циклонов) и строить график.
+
+```python
+import matplotlib.pyplot as plt
+from typing import List, Dict
+
+def plot_my_custom_criterion(candidates: List[Dict], region: Dict, output_file=None):
+    lats = [c['latitude'] for c in candidates]
+    lons = [c['longitude'] for c in candidates]
+    plt.figure(figsize=(8, 6))
+    plt.scatter(lons, lats, c='red', label='Кандидаты')
+    plt.title('Результаты критерия my_custom')
+    plt.xlabel('Долгота')
+    plt.ylabel('Широта')
+    plt.legend()
+    if output_file:
+        plt.savefig(output_file)
+    else:
+        plt.show()
+```
+
+3. Используйте функцию визуализации после обнаружения кандидатов:
+```python
+from visualization.my_criterion_plot import plot_my_custom_criterion
+plot_my_custom_criterion(candidates, region, output_file='output/my_custom_criterion.png')
+```
+
+#### 5. Рекомендации по структуре
+- Все новые критерии размещайте в [`detection/criteria/`](detection/criteria/).
+- Все функции визуализации — в [`visualization/`](visualization/), группируя по назначению.
+- Описание и параметры новых критериев добавляйте в `config.yaml` и обновляйте [`structure.md`](structure.md).
+- Следуйте стандартам кодирования и модульности (см. выше).
+
+---
+
 
 Создайте новый файл `my_criterion.py` в директории `detection/criteria`:
 
@@ -553,6 +668,9 @@ plot_cyclone_intensity_map(
 ```
 
 ## API документация
+
+Документация по основным классам и функциям приведена ниже. Для подробностей по структуре и расширению системы см. [`structure.md`](structure.md) и комментарии в коде.
+
 
 ### Класс Cyclone
 

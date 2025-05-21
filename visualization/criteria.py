@@ -99,6 +99,7 @@ def plot_combined_criteria(criteria_data: Dict[str, Dict],
                     logger.debug(f"  {key} shape: {value.shape}")
                 elif isinstance(value, (list, np.ndarray)):
                     logger.debug(f"  {key} length: {len(value)}")
+                    
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -113,114 +114,152 @@ def plot_combined_criteria(criteria_data: Dict[str, Dict],
         logger.warning("No criteria data provided for combined plot")
         return Path(output_dir)
     
-    # Create figure with subplots based on number of criteria
+    # Determine layout for subplots
+    # Aim for a layout that is roughly square or wider than tall
     if num_criteria <= 2:
-        fig = plt.figure(figsize=(18, 10))
-        gs = gridspec.GridSpec(1, num_criteria, figure=fig)
+        nrows, ncols = 1, num_criteria
     elif num_criteria <= 4:
-        fig = plt.figure(figsize=(18, 16))
-        gs = gridspec.GridSpec(2, 2, figure=fig)
+        nrows, ncols = 2, 2
     else:
         # For 5 or more criteria, use a 3x2 grid
-        fig = plt.figure(figsize=(18, 24))
-        gs = gridspec.GridSpec(3, 2, figure=fig)
+        nrows, ncols = 3, 2
     
-    # Add a main title for the entire figure
+    # Create the figure and axes for the combined plot
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 6*nrows), subplot_kw={'projection': ccrs.NorthPolarStereo(central_longitude=0)}) 
+    # Ensure axes is always a 2D array for consistent indexing, even with 1 row/col
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+
+    current_plot_idx = 0
+    plot_paths = []
+
+    for criterion_name, data in criteria_data.items():
+        if criterion_name in CRITERION_PLOT_FUNCTIONS:
+            if current_plot_idx < nrows * ncols:
+                ax = axes.flat[current_plot_idx]
+                plot_func = CRITERION_PLOT_FUNCTIONS[criterion_name]
+                
+                try:
+                    logger.info(f"Adding {criterion_name} to combined plot")
+                    # Make a copy of the data to avoid modifying the original
+                    plot_data = data.copy()
+                    
+                    # Ensure time_step and output_dir are set correctly
+                    plot_data['time_step'] = time_step
+                    plot_data['output_dir'] = output_path # Use the main output_path
+                    
+                    # Check dimensions and ensure they match (this part can be kept if it's for aligning data for the subplot)
+                    if criterion_name == 'pressure_laplacian' and 'laplacian' in plot_data and 'lats' in plot_data:
+                        lats = plot_data.get('lats', [])
+                        laplacian = plot_data.get('laplacian', [])
+                        
+                        # Ensure dimensions match
+                        if hasattr(laplacian, 'shape') and len(lats) != laplacian.shape[0]:
+                            min_dim = min(len(lats), laplacian.shape[0])
+                            plot_data['lats'] = lats[:min_dim]
+                            plot_data['laplacian'] = laplacian[:min_dim, :]
+                    
+                    elif criterion_name == 'vorticity' and 'vorticity' in plot_data and 'lats' in plot_data:
+                        lats = plot_data.get('lats', [])
+                        vorticity = plot_data.get('vorticity', [])
+                        
+                        if hasattr(vorticity, 'shape') and len(lats) != vorticity.shape[0]:
+                            min_dim = min(len(lats), vorticity.shape[0])
+                            plot_data['lats'] = lats[:min_dim]
+                            plot_data['vorticity'] = vorticity[:min_dim, :]
+                    
+                    elif criterion_name == 'closed_contour' and 'pressure' in plot_data and 'lats' in plot_data:
+                        lats = plot_data.get('lats', [])
+                        pressure = plot_data.get('pressure', [])
+                        contour_mask = plot_data.get('contour_mask', [])
+                        
+                        if hasattr(pressure, 'shape') and len(lats) != pressure.shape[0]:
+                            min_dim = min(len(lats), pressure.shape[0])
+                            plot_data['lats'] = lats[:min_dim]
+                            plot_data['pressure'] = pressure[:min_dim, :]
+                            if hasattr(contour_mask, 'shape'):
+                                plot_data['contour_mask'] = contour_mask[:min_dim, :]
+                                
+                    elif criterion_name == 'wind_threshold' and 'u_wind' in plot_data and 'lats' in plot_data:
+                        lats = plot_data.get('lats', [])
+                        u_wind = plot_data.get('u_wind', [])
+                        
+                        if hasattr(u_wind, 'shape') and len(lats) != u_wind.shape[0]:
+                            min_dim = min(len(lats), u_wind.shape[0])
+                            plot_data['lats'] = lats[:min_dim]
+                            plot_data['u_wind'] = u_wind[:min_dim, :]
+                            if 'v_wind' in plot_data and hasattr(plot_data['v_wind'], 'shape'):
+                                plot_data['v_wind'] = plot_data['v_wind'][:min_dim, :]
+                                
+                    elif criterion_name == 'pressure' and 'pressure' in plot_data and 'lats' in plot_data:
+                        lats = plot_data.get('lats', [])
+                        pressure = plot_data.get('pressure', [])
+                        
+                        if hasattr(pressure, 'shape') and len(lats) != pressure.shape[0]:
+                            min_dim = min(len(lats), pressure.shape[0])
+                            plot_data['lats'] = lats[:min_dim]
+                            plot_data['pressure'] = pressure[:min_dim, :]
+                    
+                    # Call the plotting function, passing the specific subplot axis and disabling individual title
+                    plot_path = plot_func(**plot_data, ax=ax, show_title=False) # Pass ax, show_title=False
+                    
+                    # Add a title to the subplot indicating the criterion
+                    ax.set_title(criterion_name.replace('_', ' ').title(), fontsize=10)
+                    
+                    if plot_path and Path(plot_path).exists(): # plot_func returns path, but we don't rely on it here
+                        logger.info(f"Successfully added {criterion_name} to combined plot")
+                    else:
+                        # This case might not be hit if plot_func doesn't save when ax is provided
+                        logger.debug(f"Plot function for {criterion_name} completed for subplot.")
+
+                    current_plot_idx += 1
+                except Exception as e:
+                    logger.error(f"Error generating combined plot component for {criterion_name}: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # Optionally, mark the subplot as failed
+                    if current_plot_idx < nrows * ncols:
+                        ax = axes.flat[current_plot_idx]
+                        ax.text(0.5, 0.5, f'{criterion_name}\nFailed to plot', 
+                                horizontalalignment='center', verticalalignment='center', 
+                                transform=ax.transAxes, color='red')
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        current_plot_idx += 1 # Move to next subplot even on failure
+            else:
+                logger.warning(f"Not enough subplots for criterion {criterion_name}. Max plots: {nrows*ncols}")
+        else:
+            logger.warning(f"Plot function for criterion '{criterion_name}' not found.")
+
+    # Hide any unused subplots
+    for i in range(current_plot_idx, nrows * ncols):
+        fig.delaxes(axes.flat[i])
+    
+    # Add a main title to the figure
     if hasattr(time_step, 'strftime'):
         time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
     else:
         time_str = str(time_step)
+    fig.suptitle(f'Combined Criteria Visualization - {time_str}', fontsize=16, y=1.02) # Adjust y as needed
     
-    fig.suptitle(f'Combined Criteria Fields - {time_str}', fontsize=16, fontweight='bold')
-    
-    # Plot each criterion in its subplot
-    for i, (criterion_name, data) in enumerate(criteria_data.items()):
-        # Create subplot with Arctic projection
-        ax = plt.subplot(gs[i], projection=ccrs.NorthPolarStereo())
-        
-        # Get the plot function for this criterion
-        if criterion_name in CRITERION_PLOT_FUNCTIONS:
-            plot_func = CRITERION_PLOT_FUNCTIONS[criterion_name]
-            
-            # Add the axes to the data dictionary
-            data['ax'] = ax
-            data['show_title'] = True  # Show titles in the subplots
-            
-            # Call the plot function with the data
-            try:
-                # Make a copy of the data to avoid modifying the original
-                plot_data = data.copy()
-                
-                # Check dimensions and ensure they match for all criteria types
-                if criterion_name == 'pressure_laplacian' and 'laplacian' in plot_data and 'lats' in plot_data:
-                    lats = plot_data.get('lats', [])
-                    laplacian = plot_data.get('laplacian', [])
-                    
-                    # Log dimensions for debugging
-                    logger.debug(f"Plotting {criterion_name} - lats shape: {np.shape(lats)}, data shape: {np.shape(laplacian)}")
-                    
-                    # Ensure dimensions match
-                    if hasattr(laplacian, 'shape') and len(lats) != laplacian.shape[0]:
-                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={laplacian.shape[0]}")
-                        # Use only the valid part of the data that matches latitude dimension
-                        min_dim = min(len(lats), laplacian.shape[0])
-                        plot_data['lats'] = lats[:min_dim]
-                        plot_data['laplacian'] = laplacian[:min_dim, :]
-                        logger.info(f"Adjusted dimensions to match: {min_dim} rows")
-                
-                elif criterion_name == 'vorticity' and 'vorticity' in plot_data and 'lats' in plot_data:
-                    lats = plot_data.get('lats', [])
-                    vorticity = plot_data.get('vorticity', [])
-                    
-                    if hasattr(vorticity, 'shape') and len(lats) != vorticity.shape[0]:
-                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={vorticity.shape[0]}")
-                        min_dim = min(len(lats), vorticity.shape[0])
-                        plot_data['lats'] = lats[:min_dim]
-                        plot_data['vorticity'] = vorticity[:min_dim, :]
-                
-                elif criterion_name == 'closed_contour' and 'pressure' in plot_data and 'lats' in plot_data:
-                    lats = plot_data.get('lats', [])
-                    pressure = plot_data.get('pressure', [])
-                    contour_mask = plot_data.get('contour_mask', [])
-                    
-                    if hasattr(pressure, 'shape') and len(lats) != pressure.shape[0]:
-                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={pressure.shape[0]}")
-                        min_dim = min(len(lats), pressure.shape[0])
-                        plot_data['lats'] = lats[:min_dim]
-                        plot_data['pressure'] = pressure[:min_dim, :]
-                        if hasattr(contour_mask, 'shape'):
-                            plot_data['contour_mask'] = contour_mask[:min_dim, :]
-                
-                # Always ensure ax is included
-                plot_data['ax'] = ax
-                plot_data['show_title'] = True
-                
-                # Call the plot function with the prepared data
-                logger.info(f"Calling plot function for {criterion_name} with data keys: {list(plot_data.keys())}")
-                plot_func(**plot_data)
-                logger.info(f"Successfully plotted {criterion_name}")
-            except Exception as e:
-                logger.error(f"Error plotting {criterion_name}: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())  # Print full traceback for debugging
-                ax.text(0.5, 0.5, f"Error plotting {criterion_name}\n{str(e)}", 
-                       transform=ax.transAxes, ha='center', va='center', fontsize=10,
-                       bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'))
-        else:
-            logger.warning(f"No plot function found for criterion: {criterion_name}")
-            ax.text(0.5, 0.5, f"Unknown criterion: {criterion_name}", 
-                   transform=ax.transAxes, ha='center', va='center')
-    
-    # Adjust layout
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave room for the suptitle
+    # Adjust layout to prevent overlapping titles/plots
+    plt.tight_layout(rect=[0, 0, 1, 0.98]) # Adjust rect to make space for suptitle
     
     # Save the combined figure
-    output_file = output_path / f"combined_criteria_{timestamp}.png"
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    combined_plot_filename = f"combined_criteria_{timestamp}.png"
+    combined_plot_path = output_path / combined_plot_filename
+    
+    save_figure(fig, combined_plot_path)
+    logger.info(f"Saved combined criteria visualization to {combined_plot_path}")
+    
+    # Close the figure to free memory
     plt.close(fig)
     
-    logger.info(f"Saved combined criteria visualization to {output_file}")
-    return output_file
+    return combined_plot_path
 
 def plot_criterion_field(field_data: np.ndarray, 
                         lats: np.ndarray, 

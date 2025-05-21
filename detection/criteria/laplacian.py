@@ -12,6 +12,9 @@ from typing import Dict, List, Any, Optional
 import logging
 import scipy.ndimage as ndimage
 from scipy import signal
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 from matplotlib.lines import Line2D 
 
 from . import BaseCriterion
@@ -47,6 +50,7 @@ class PressureLaplacianCriterion(BaseCriterion):
         self.laplacian_threshold = laplacian_threshold
         self.window_size = window_size
         self.smooth_sigma = smooth_sigma
+        self.laplacian_field = None
         
         logger.debug(f"Initialized pressure Laplacian criterion: "
                     f"min_latitude={min_latitude}, "
@@ -156,6 +160,9 @@ class PressureLaplacianCriterion(BaseCriterion):
             # Scale the Laplacian
             laplacian = laplacian_raw / grid_size
             
+            # Store the laplacian field for visualization
+            self.laplacian_field = laplacian
+            
             # Find local maxima above threshold
             # Positive Laplacian values indicate cyclonic features in Northern Hemisphere
             max_filter = ndimage.maximum_filter(laplacian, size=self.window_size)
@@ -197,6 +204,22 @@ class PressureLaplacianCriterion(BaseCriterion):
             # We already calculated dx and dy above, just use average values for logging
             dlat_km = np.mean(dy)  # Average latitude step in km
             dlon_km = np.mean(dx)  # Average longitude step in km
+            
+            # Create visualization if debug_plot is enabled
+            if debug_plot and output_dir:
+                try:
+                    plot_laplacian_field(
+                        laplacian=self.laplacian_field,
+                        lats=lats,
+                        lons=lons,
+                        threshold=self.laplacian_threshold,
+                        time_step=time_step,
+                        output_dir=output_dir
+                    )
+                except Exception as e:
+                    logger.error(f"Error creating laplacian field plot: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
             return candidates
                 

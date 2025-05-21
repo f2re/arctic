@@ -14,6 +14,9 @@ from typing import List, Dict, Optional, Union, Tuple, Any, Callable
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 

@@ -5,6 +5,9 @@ Provides functions to visualize and save the fields used by different detection 
 such as pressure laplacian, vorticity, etc.
 """
 
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 import matplotlib.path as mpath
@@ -86,6 +89,16 @@ def plot_combined_criteria(criteria_data: Dict[str, Dict],
     Returns:
         Path to the saved figure
     """
+    # Debug log the criteria data keys and their contents
+    logger.info(f"Creating combined visualization with criteria: {list(criteria_data.keys())}")
+    for criterion, data in criteria_data.items():
+        logger.debug(f"Criterion {criterion} data keys: {list(data.keys())}")
+        for key, value in data.items():
+            if key not in ['time_step', 'output_dir', 'threshold']:
+                if hasattr(value, 'shape'):
+                    logger.debug(f"  {key} shape: {value.shape}")
+                elif isinstance(value, (list, np.ndarray)):
+                    logger.debug(f"  {key} length: {len(value)}")
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -135,11 +148,64 @@ def plot_combined_criteria(criteria_data: Dict[str, Dict],
             
             # Call the plot function with the data
             try:
-                plot_func(**data)
+                # Make a copy of the data to avoid modifying the original
+                plot_data = data.copy()
+                
+                # Check dimensions and ensure they match for all criteria types
+                if criterion_name == 'pressure_laplacian' and 'laplacian' in plot_data and 'lats' in plot_data:
+                    lats = plot_data.get('lats', [])
+                    laplacian = plot_data.get('laplacian', [])
+                    
+                    # Log dimensions for debugging
+                    logger.debug(f"Plotting {criterion_name} - lats shape: {np.shape(lats)}, data shape: {np.shape(laplacian)}")
+                    
+                    # Ensure dimensions match
+                    if hasattr(laplacian, 'shape') and len(lats) != laplacian.shape[0]:
+                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={laplacian.shape[0]}")
+                        # Use only the valid part of the data that matches latitude dimension
+                        min_dim = min(len(lats), laplacian.shape[0])
+                        plot_data['lats'] = lats[:min_dim]
+                        plot_data['laplacian'] = laplacian[:min_dim, :]
+                        logger.info(f"Adjusted dimensions to match: {min_dim} rows")
+                
+                elif criterion_name == 'vorticity' and 'vorticity' in plot_data and 'lats' in plot_data:
+                    lats = plot_data.get('lats', [])
+                    vorticity = plot_data.get('vorticity', [])
+                    
+                    if hasattr(vorticity, 'shape') and len(lats) != vorticity.shape[0]:
+                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={vorticity.shape[0]}")
+                        min_dim = min(len(lats), vorticity.shape[0])
+                        plot_data['lats'] = lats[:min_dim]
+                        plot_data['vorticity'] = vorticity[:min_dim, :]
+                
+                elif criterion_name == 'closed_contour' and 'pressure' in plot_data and 'lats' in plot_data:
+                    lats = plot_data.get('lats', [])
+                    pressure = plot_data.get('pressure', [])
+                    contour_mask = plot_data.get('contour_mask', [])
+                    
+                    if hasattr(pressure, 'shape') and len(lats) != pressure.shape[0]:
+                        logger.warning(f"Dimension mismatch in {criterion_name}: lats={len(lats)}, data rows={pressure.shape[0]}")
+                        min_dim = min(len(lats), pressure.shape[0])
+                        plot_data['lats'] = lats[:min_dim]
+                        plot_data['pressure'] = pressure[:min_dim, :]
+                        if hasattr(contour_mask, 'shape'):
+                            plot_data['contour_mask'] = contour_mask[:min_dim, :]
+                
+                # Always ensure ax is included
+                plot_data['ax'] = ax
+                plot_data['show_title'] = True
+                
+                # Call the plot function with the prepared data
+                logger.info(f"Calling plot function for {criterion_name} with data keys: {list(plot_data.keys())}")
+                plot_func(**plot_data)
+                logger.info(f"Successfully plotted {criterion_name}")
             except Exception as e:
                 logger.error(f"Error plotting {criterion_name}: {str(e)}")
-                ax.text(0.5, 0.5, f"Error plotting {criterion_name}", 
-                       transform=ax.transAxes, ha='center', va='center')
+                import traceback
+                logger.error(traceback.format_exc())  # Print full traceback for debugging
+                ax.text(0.5, 0.5, f"Error plotting {criterion_name}\n{str(e)}", 
+                       transform=ax.transAxes, ha='center', va='center', fontsize=10,
+                       bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'))
         else:
             logger.warning(f"No plot function found for criterion: {criterion_name}")
             ax.text(0.5, 0.5, f"Unknown criterion: {criterion_name}", 
@@ -205,8 +271,8 @@ def plot_criterion_field(field_data: np.ndarray,
     
     # Log data shapes and ranges for debugging
     logger.debug(f"Plotting {criterion_name} field with shapes - lats: {lats.shape}, lons: {lons.shape}, data: {masked_data.shape}")
-    logger.debug(f"Data range: min={np.nanmin(masked_data)}, max={np.nanmax(masked_data)}")
-    logger.debug(f"Lat range: {np.nanmin(lats)} to {np.nanmax(lats)}, Lon range: {np.nanmin(lons)} to {np.nanmax(lons)}")
+    logger.debug(f"Data range: min={np.nanmin(masked_data.compressed())}, max={np.nanmax(masked_data.compressed())}")
+    logger.debug(f"Lat range: {np.nanmin(lats)}, {np.nanmax(lats)}, Lon range: {np.nanmin(lons)}, {np.nanmax(lons)}")
     
     # Ensure coordinates are 2D for proper plotting
     if lats.ndim == 1 or lons.ndim == 1:
@@ -226,9 +292,9 @@ def plot_criterion_field(field_data: np.ndarray,
         # Determine appropriate contour levels
         if vmin is None or vmax is None:
             # Calculate reasonable min/max values, ignoring outliers
-            valid_data = masked_data[~np.isnan(masked_data) & ~np.ma.getmask(masked_data)]
+            valid_data = masked_data.compressed()
             if len(valid_data) > 0:
-                data_min, data_max = np.percentile(valid_data, [2, 98])
+                data_min, data_max = np.percentile(valid_data.compressed() if hasattr(valid_data, 'compressed') else valid_data, [2, 98])
                 # Ensure we have some range even with constant data
                 if data_min == data_max:
                     data_min = data_min - 0.1 * abs(data_min) if data_min != 0 else -0.1
@@ -474,7 +540,7 @@ def plot_vorticity_field(vorticity: np.ndarray,
                         ax: Optional[plt.Axes] = None,
                         show_title: bool = True) -> Path:
     """
-    Visualizes a vorticity field with threshold highlighted.
+    Visualizes a vorticity field with threshold highlighted and isolines.
     
     Arguments:
         vorticity: 2D array containing vorticity values
@@ -483,21 +549,188 @@ def plot_vorticity_field(vorticity: np.ndarray,
         threshold: Threshold value used for detection
         time_step: Time step for the data
         output_dir: Directory to save the output image
+        ax: Optional matplotlib axes for embedding in a larger figure
+        show_title: Whether to show the title (useful when embedding)
         
     Returns:
         Path to the saved figure
     """
-    # Use a specific colormap for vorticity
-    return plot_criterion_field(
-        field_data=vorticity,
-        lats=lats,
-        lons=lons,
-        title=f'Vorticity Field (Threshold: {threshold})',
-        criterion_name='vorticity',
-        time_step=time_step,
-        output_dir=output_dir,
-        cmap='coolwarm'
-    )
+    # Create output directory if it doesn't exist
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Create a figure with Arctic projection if ax is not provided
+    if ax is None:
+        fig, ax = create_arctic_map(min_latitude=65.0, figsize=(10, 8))
+    else:
+        fig = ax.figure
+    
+    timestamp = format_timestep(time_step)
+    
+    # Define the transform for data coordinates
+    transform = ccrs.PlateCarree()
+    
+    # Ensure coordinates are 2D for proper plotting
+    if lats.ndim == 1 or lons.ndim == 1:
+        logger.info("Converting 1D coordinate arrays to 2D meshgrid for plotting")
+        lons_mesh, lats_mesh = np.meshgrid(lons, lats)
+    else:
+        lons_mesh, lats_mesh = lons, lats
+    
+    # Mask data outside the Arctic region
+    arctic_mask = lats_mesh >= 65.0
+    if not np.all(arctic_mask):
+        logger.debug(f"Masking vorticity data below 65°N")
+        masked_vorticity = np.ma.array(vorticity, mask=~arctic_mask)
+    else:
+        masked_vorticity = np.ma.masked_invalid(vorticity)
+    
+    try:
+        # Get valid data for level calculation
+        flat_vorticity = masked_vorticity.flatten()
+        flat_mask = np.ma.getmaskarray(flat_vorticity) | np.isnan(flat_vorticity)
+        valid_data = flat_vorticity[~flat_mask]
+        
+        # Log the actual data range
+        if len(valid_data) > 0:
+            actual_min = np.min(valid_data)
+            actual_max = np.max(valid_data)
+            logger.info(f"Vorticity actual range: min={actual_min:.6f}, max={actual_max:.6f} 1/s")
+            
+            # Create a symmetric range around zero for proper visualization
+            abs_max = max(abs(actual_min), abs(actual_max))
+            data_min = -abs_max
+            data_max = abs_max
+            
+            # Find locations of minimums and maximums
+            min_idx = np.unravel_index(np.argmin(masked_vorticity), masked_vorticity.shape)
+            max_idx = np.unravel_index(np.argmax(masked_vorticity), masked_vorticity.shape)
+            min_lat, min_lon = lats_mesh[min_idx], lons_mesh[min_idx]
+            max_lat, max_lon = lats_mesh[max_idx], lons_mesh[max_idx]
+        else:
+            # Fallback if no valid data
+            data_min, data_max = -1e-4, 1e-4
+            logger.warning("No valid vorticity data points for contour plot")
+        
+        # Create levels for filled contours and isolines
+        fill_levels = np.linspace(data_min, data_max, 30)
+        line_levels = np.linspace(data_min, data_max, 20)
+        
+        # Add zero level explicitly if not in the levels
+        if data_min < 0 < data_max and 0 not in fill_levels:
+            fill_levels = np.sort(np.append(fill_levels, 0))
+            line_levels = np.sort(np.append(line_levels, 0))
+        
+        # Use TwoSlopeNorm to ensure 0 corresponds to white color
+        norm = TwoSlopeNorm(vmin=data_min, vcenter=0, vmax=data_max)
+        
+        # Filled contour with zero-centered coloring
+        contourf = ax.contourf(lons_mesh, lats_mesh, masked_vorticity, 
+                             transform=transform,
+                             cmap='RdBu_r',  # Blue for negative, red for positive
+                             levels=fill_levels,
+                             norm=norm,  # Normalize to fix zero at white
+                             extend='both',
+                             alpha=0.8,
+                             zorder=5)
+        
+        # Vorticity isolines
+        contour = ax.contour(lons_mesh, lats_mesh, masked_vorticity,
+                           levels=line_levels[::2],  # Use fewer levels for clarity
+                           colors='black',
+                           linewidths=0.5,
+                           alpha=0.6,
+                           transform=transform,
+                           zorder=6)
+        
+        # Special line for zero - outlines boundary between positive and negative values
+        zero_contour = ax.contour(lons_mesh, lats_mesh, masked_vorticity,
+                                levels=[0],
+                                colors='grey',
+                                linewidths=0.8,
+                                alpha=0.8,
+                                transform=transform,
+                                zorder=7)
+        
+        # Contour labels (not for all to avoid clutter)
+        plt.clabel(contour, contour.levels[::4], inline=True, fontsize=8, fmt='%.1e')
+        plt.clabel(zero_contour, [0], inline=True, fontsize=9, fmt='%.1f')
+        
+        # Threshold contour - highlight the detection threshold
+        threshold_contour = ax.contour(lons_mesh, lats_mesh, masked_vorticity,
+                                     levels=[threshold],
+                                     colors='red',
+                                     linewidths=1.5,
+                                     transform=transform,
+                                     zorder=8)
+        
+        # Threshold label
+        plt.clabel(threshold_contour, [threshold], inline=True, fontsize=9, fmt='%.2e',
+                  colors='red')
+        
+        # Add geographic features on top of the plot
+        ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.8, edgecolor='black', zorder=10)
+        ax.add_feature(cfeature.BORDERS.with_scale('50m'), linewidth=0.5, edgecolor='gray', zorder=9)
+        ax.add_feature(cfeature.LAKES.with_scale('50m'), facecolor='lightblue', edgecolor='black', zorder=8, alpha=0.5)
+        
+        # Color legend
+        cbar = plt.colorbar(contourf, ax=ax, orientation='horizontal', 
+                          pad=0.05, shrink=0.8)
+        cbar.set_label('Relative Vorticity (1/s)', fontsize=10, fontweight='bold')
+        cbar.ax.tick_params(labelsize=9)
+        
+        if len(valid_data) > 0:
+            ax.plot(min_lon, min_lat, marker='v', color='blue', markersize=8, markeredgecolor='white', transform=transform, zorder=20)
+            ax.plot(max_lon, max_lat, marker='^', color='red', markersize=8, markeredgecolor='white', transform=transform, zorder=20)
+            ax.text(min_lon, min_lat, f"Min\n{actual_min:.2e}", color='blue', fontsize=8, fontweight='bold', ha='right', va='bottom', transform=transform, zorder=21, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+            ax.text(max_lon, max_lat, f"Max\n{actual_max:.2e}", color='red', fontsize=8, fontweight='bold', ha='left', va='top', transform=transform, zorder=21, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+            plt.figtext(0.99, 0.01, f"Min: {actual_min:.2e} at ({min_lat:.2f}N, {min_lon:.2f}E)\nMax: {actual_max:.2e} at ({max_lat:.2f}N, {max_lon:.2f}E)", fontsize=8, ha='right', va='bottom', color='black', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        
+        # Circular boundary for polar stereographic projection
+        theta = np.linspace(0, 2*np.pi, 100)
+        center, radius = [0.5, 0.5], 0.5
+        verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+        circle = mpath.Path(verts * radius + center)
+        ax.set_boundary(circle, transform=ax.transAxes)
+        
+        # Add coordinate grid
+        gl = ax.gridlines(crs=transform, draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Title with date
+        if show_title:
+            if hasattr(time_step, 'strftime'):
+                time_str = time_step.strftime('%Y-%m-%d %H:%M UTC')
+            else:
+                time_str = str(time_step)
+            
+            plt.title(f'Vorticity Field (Threshold: {threshold:.2e} 1/s)\n{time_str}', 
+                    fontsize=12, fontweight='bold')
+        
+        # Explanation about positive values
+        plt.figtext(0.02, 0.02, 'Positive values (red) indicate cyclonic circulation in NH', fontsize=8, ha='left')
+        
+        # Save the image if this is a standalone plot (not embedded)
+        if ax is None:
+            output_file = output_path / f"vorticity_{timestamp}.png"
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            logger.info(f"Saved vorticity field visualization to {output_file}")
+            return output_file
+        else:
+            # If embedded, just return the path without saving
+            return output_path / f"vorticity_{timestamp}.png"
+            
+    except Exception as e:
+        logger.error(f"Error creating vorticity field plot: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        output_file = output_path / f"vorticity_{timestamp}_error.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved error visualization to {output_file}")
+        plt.close(fig)
+        return output_file
 
 def plot_pressure_field(pressure: np.ndarray, 
                       lats: np.ndarray, 
@@ -563,8 +796,8 @@ def plot_pressure_field(pressure: np.ndarray,
         if len(valid_data) > 0:
             # Standard sea level pressure range is typically 980-1050 hPa
             # Use actual data range but constrain to meteorologically meaningful values
-            data_min = max(960, np.floor(np.percentile(valid_data, 2) / 5) * 5)
-            data_max = min(1050, np.ceil(np.percentile(valid_data, 98) / 5) * 5)
+            data_min = max(960, np.floor(np.percentile(valid_data.compressed() if hasattr(valid_data, 'compressed') else valid_data, 2) / 5) * 5)
+            data_max = min(1050, np.ceil(np.percentile(valid_data.compressed() if hasattr(valid_data, 'compressed') else valid_data, 98) / 5) * 5)
             
             # If range is too small, use standard range
             if data_max - data_min < 20:
@@ -729,7 +962,7 @@ def plot_wind_field(u_wind: np.ndarray,
     
     # Log data shapes and ranges for debugging
     logger.debug(f"Plotting wind field with shapes - lats: {lats.shape}, lons: {lons.shape}, u: {u_wind.shape}, v: {v_wind.shape}")
-    logger.debug(f"Wind speed range: min={np.nanmin(wind_speed)}, max={np.nanmax(wind_speed)}")
+    logger.debug(f"Wind speed range: min={np.nanmin(wind_speed.compressed()) if hasattr(wind_speed, 'compressed') else np.nanmin(wind_speed)}, max={np.nanmax(wind_speed.compressed()) if hasattr(wind_speed, 'compressed') else np.nanmax(wind_speed)}")
     
     # Ensure coordinates are 2D for proper plotting
     if lats.ndim == 1 or lons.ndim == 1:
@@ -752,7 +985,7 @@ def plot_wind_field(u_wind: np.ndarray,
         valid_speed = masked_speed.compressed()  # Немаскированные значения как 1D массив
         
         if len(valid_speed) > 0:
-            data_min, data_max = np.percentile(valid_speed, [2, 98])
+            data_min, data_max = np.percentile(valid_speed.compressed() if hasattr(valid_speed, 'compressed') else valid_speed, [2, 98])
             # Обеспечиваем корректный диапазон даже с почти постоянными данными
             if np.isclose(data_min, data_max):
                 data_min = max(0, data_min - 0.1 * abs(data_min))
@@ -937,7 +1170,7 @@ def plot_closed_contour_field(pressure: np.ndarray,
     pressure_hpa = pressure / 100.0
     
     # Plot pressure contours
-    contour_levels = np.linspace(np.nanmin(pressure_hpa), np.nanmax(pressure_hpa), 15)
+    contour_levels = np.linspace(np.nanmin(pressure_hpa.compressed()) if hasattr(pressure_hpa, 'compressed') else np.nanmin(pressure_hpa), np.nanmax(pressure_hpa.compressed()) if hasattr(pressure_hpa, 'compressed') else np.nanmax(pressure_hpa), 15)
     cs = ax.contour(lons, lats, pressure_hpa, 
                    levels=contour_levels,
                    transform=transform,

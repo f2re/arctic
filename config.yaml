@@ -22,7 +22,7 @@ detection:
       gradient_threshold: 0.5  # Minimum pressure gradient (hPa/100km)
     vorticity:
       enabled: true
-      threshold: 1.0e-5  # Minimum vorticity (1/s)
+      threshold: 2.0e-4  # Minimum vorticity (1/s)
       level: 850  # Pressure level for vorticity analysis (hPa)
     closed_contour:
       enabled: true

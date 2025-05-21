@@ -14,6 +14,9 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import pdist, squareform
@@ -1344,11 +1347,11 @@ class CycloneStatistics:
                 
                 # Рассчитываем доверительные интервалы
                 alpha = (1 - confidence_level) / 2
-                ci_lower_mean = np.percentile(bootstrap_means, alpha * 100)
-                ci_upper_mean = np.percentile(bootstrap_means, (1 - alpha) * 100)
+                ci_lower_mean = np.percentile(bootstrap_means.compressed() if hasattr(bootstrap_means, 'compressed') else bootstrap_means, alpha * 100)
+                ci_upper_mean = np.percentile(bootstrap_means.compressed() if hasattr(bootstrap_means, 'compressed') else bootstrap_means, (1 - alpha) * 100)
                 
-                ci_lower_median = np.percentile(bootstrap_medians, alpha * 100)
-                ci_upper_median = np.percentile(bootstrap_medians, (1 - alpha) * 100)
+                ci_lower_median = np.percentile(bootstrap_medians.compressed() if hasattr(bootstrap_medians, 'compressed') else bootstrap_medians, alpha * 100)
+                ci_upper_median = np.percentile(bootstrap_medians.compressed() if hasattr(bootstrap_medians, 'compressed') else bootstrap_medians, (1 - alpha) * 100)
                 
                 # Рассчитываем стандартное отклонение бутстрап-выборок
                 bootstrap_std = np.std(bootstrap_means)

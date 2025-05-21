@@ -129,54 +129,63 @@ class CycloneDetector:
             logger.warning(f"[CycloneDetector.detect] Called with empty or None dataset at time_step={time_step} (instance id: {getattr(self, '_instance_id', id(self))})")
             return []
         # Check for critical variables
-        required_vars = ['vorticity', 'msl', 'u', 'v']
+        required_vars = ['vorticity', 'mean_sea_level_pressure', 'u_component_of_wind', 'v_component_of_wind']
         missing = [var for var in required_vars if var not in dataset]
         if missing:
             logger.warning(f"[CycloneDetector.detect] Dataset missing required variables {missing} at time_step={time_step} (instance id: {getattr(self, '_instance_id', id(self))})")        
-        try:
-            if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
-                dataset = dataset.rename({'valid_time': 'time'})
-            # Проверяем набор данных
-            if 'time' not in dataset.dims:
-                raise ValueError("Набор данных должен содержать измерение 'time'")
-                
-            # Выбираем временной шаг
-            if time_step is None:
-                time_step = dataset.time.values[0]
-                logger.info(f"Используется первый доступный временной шаг: {time_step}")
-            else:
-                if time_step not in dataset.time.values:
-                    raise ValueError(f"Временной шаг {time_step} отсутствует в наборе данных")
+        # try:
+        if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
+            dataset = dataset.rename({'valid_time': 'time'})
+        # Проверяем набор данных
+        if 'time' not in dataset.dims:
+            raise ValueError("Набор данных должен содержать измерение 'time'")
             
-            # Применяем маску арктического региона
-            arctic_mask = dataset.latitude >= self.min_latitude
-            arctic_data = dataset.where(arctic_mask, drop=True)
+        # Выбираем временной шаг
+        if time_step is None:
+            time_step = dataset.time.values[0]
+            logger.info(f"Используется первый доступный временной шаг: {time_step}")
+        else:
+            if time_step not in dataset.time.values:
+                raise ValueError(f"Временной шаг {time_step} отсутствует в наборе данных")
+        
+        # Применяем маску арктического региона
+        arctic_mask = dataset.latitude >= self.min_latitude
+        arctic_data = dataset.where(arctic_mask, drop=True)
+        
+        # Применяем критерии обнаружения
+        candidates = self._apply_detection_criteria(arctic_data, time_step)
+        
+        # --- DEBUG: Print all candidate values before filtering/creation ---
+        logger.debug(f"[CycloneDetector.detect] Number of candidates: {len(candidates)}")
+        for i, candidate in enumerate(candidates):
+            logger.debug(f"Candidate {i}: {candidate}")
+            for key, value in candidate.items():
+                logger.debug(f"  {key}: {value} (type={type(value)})")
+            # Check for None in critical fields
+            critical_fields = ['latitude', 'longitude', 'pressure', 'vorticity', 'wind_speed']
+            for field in critical_fields:
+                if field in candidate and candidate[field] is None:
+                    logger.error(f"Candidate {i} has None for {field}, skipping this candidate!")
+                    candidate['skip_due_to_none'] = True
+        # --- END DEBUG ---
+        
+        cyclones = []
+        for i, candidate in enumerate(candidates):
+            if candidate.get('skip_due_to_none'):
+                continue
+            try:
+                cyclone = self._create_cyclone(candidate, arctic_data, time_step)
+                cyclones.append(cyclone)
+            except Exception as e:
+                logger.error(f"Error creating cyclone from candidate {i}: {e}\nCandidate: {candidate}")
+
+        logger.info(f"Обнаружено {len(cyclones)} циклонов для временного шага {time_step}")
+        return cyclones
             
-            # Применяем критерии обнаружения
-            cyclone_candidates = self._apply_detection_criteria(arctic_data, time_step)
-            
-            # Создаем объекты циклонов
-            cyclones = []
-            for candidate in cyclone_candidates:
-                try:
-                    # Создаем объект циклона
-                    cyclone = self._create_cyclone(candidate, arctic_data, time_step)
-                    
-                    # Проверяем валидность
-                    if self.validator.validate_cyclone(cyclone, arctic_data):
-                        cyclones.append(cyclone)
-                    else:
-                        logger.debug(f"Отклонен кандидат в циклоны в точке ({candidate['latitude']}, {candidate['longitude']})")
-                except Exception as e:
-                    logger.warning(f"Ошибка при создании циклона: {str(e)}")
-            
-            logger.info(f"Обнаружено {len(cyclones)} циклонов для временного шага {time_step}")
-            return cyclones
-            
-        except Exception as e:
-            error_msg = f"Ошибка при обнаружении циклонов: {str(e)}"
-            logger.error(error_msg)
-            raise DetectionError(error_msg)
+        # except Exception as e:
+        #     error_msg = f"Ошибка при обнаружении циклонов: {str(e)}"
+        #     logger.error(error_msg)
+        #     raise DetectionError(error_msg)
     
     def _apply_detection_criteria(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
         """
@@ -240,39 +249,83 @@ class CycloneDetector:
                 if self.debug_plot:
                     # Extract data for visualization based on criterion type
                     if criterion_name == 'pressure_laplacian' and hasattr(criterion, 'laplacian_field'):
+                        # Get the actual dimensions used in the criterion
+                        lats = dataset.sel(time=time_step).latitude.values
+                        lons = dataset.sel(time=time_step).longitude.values
+                        
+                        # Filter to Arctic region if needed to match the data dimensions
+                        if hasattr(criterion, 'min_latitude'):
+                            arctic_lats = lats[lats >= criterion.min_latitude]
+                            if len(arctic_lats) != criterion.laplacian_field.shape[0]:
+                                logger.warning(f"Latitude dimension mismatch: {len(arctic_lats)} vs {criterion.laplacian_field.shape[0]}")
+                        
+                        # Store the visualization data ensuring dimensions match
                         criteria_viz_data['pressure_laplacian'] = {
                             'laplacian': criterion.laplacian_field,
-                            'lats': dataset.latitude.values,
-                            'lons': dataset.longitude.values,
+                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                            'lons': lons,
                             'threshold': criterion.laplacian_threshold,
                             'time_step': time_step,
                             'output_dir': output_dir
                         }
                     elif criterion_name == 'vorticity' and hasattr(criterion, 'vorticity_field'):
+                        # Get the actual dimensions used in the criterion
+                        lats = dataset.sel(time=time_step).latitude.values
+                        lons = dataset.sel(time=time_step).longitude.values
+                        
+                        # Filter to Arctic region if needed to match the data dimensions
+                        if hasattr(criterion, 'min_latitude'):
+                            arctic_lats = lats[lats >= criterion.min_latitude]
+                            if len(arctic_lats) != criterion.vorticity_field.shape[0]:
+                                logger.warning(f"Vorticity latitude dimension mismatch: {len(arctic_lats)} vs {criterion.vorticity_field.shape[0]}")
+                        
+                        # Store the visualization data ensuring dimensions match
                         criteria_viz_data['vorticity'] = {
                             'vorticity': criterion.vorticity_field,
-                            'lats': dataset.latitude.values,
-                            'lons': dataset.longitude.values,
+                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                            'lons': lons,
                             'threshold': criterion.vorticity_threshold,
                             'time_step': time_step,
                             'output_dir': output_dir
                         }
                     elif criterion_name == 'wind_threshold' and hasattr(criterion, 'u_data') and hasattr(criterion, 'v_data'):
+                        # Get the actual dimensions used in the criterion
+                        lats = dataset.sel(time=time_step).latitude.values
+                        lons = dataset.sel(time=time_step).longitude.values
+                        
+                        # Filter to Arctic region if needed to match the data dimensions
+                        if hasattr(criterion, 'min_latitude'):
+                            arctic_lats = lats[lats >= criterion.min_latitude]
+                            if len(arctic_lats) != criterion.u_data.shape[0]:
+                                logger.warning(f"Wind latitude dimension mismatch: {len(arctic_lats)} vs {criterion.u_data.shape[0]}")
+                        
+                        # Store the visualization data ensuring dimensions match
                         criteria_viz_data['wind_threshold'] = {
                             'u_wind': criterion.u_data,
                             'v_wind': criterion.v_data,
-                            'lats': dataset.latitude.values,
-                            'lons': dataset.longitude.values,
+                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                            'lons': lons,
                             'threshold': criterion.min_speed,
                             'time_step': time_step,
                             'output_dir': output_dir
                         }
                     elif criterion_name == 'closed_contour' and hasattr(criterion, 'pressure_field') and hasattr(criterion, 'contour_mask'):
+                        # Get the actual dimensions used in the criterion
+                        lats = dataset.sel(time=time_step).latitude.values
+                        lons = dataset.sel(time=time_step).longitude.values
+                        
+                        # Filter to Arctic region if needed to match the data dimensions
+                        if hasattr(criterion, 'min_latitude'):
+                            arctic_lats = lats[lats >= criterion.min_latitude]
+                            if len(arctic_lats) != criterion.pressure_field.shape[0]:
+                                logger.warning(f"Closed contour latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
+                        
+                        # Store the visualization data ensuring dimensions match
                         criteria_viz_data['closed_contour'] = {
                             'pressure': criterion.pressure_field,
                             'contour_mask': criterion.contour_mask,
-                            'lats': dataset.latitude.values,
-                            'lons': dataset.longitude.values,
+                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                            'lons': lons,
                             'time_step': time_step,
                             'output_dir': output_dir
                         }
@@ -283,15 +336,30 @@ class CycloneDetector:
                 logger.error(traceback.format_exc())
         
         # Create combined visualization if debug_plot is enabled and we have data to visualize
-        if self.debug_plot and criteria_viz_data:
+        if self.debug_plot:
+            # Check if any criteria were not added to visualization data
+            active_criteria_names = set(active_criteria.keys())
+            visualized_criteria = set(criteria_viz_data.keys())
+            missing_criteria = active_criteria_names - visualized_criteria
+            
+            if missing_criteria:
+                logger.warning(f"Some active criteria were not visualized: {missing_criteria}")
+                
+            # Log which criteria will be visualized
+            logger.info(f"Visualizing criteria: {list(criteria_viz_data.keys())}")
+            
+            # Create the combined visualization
             try:
-                logger.info(f"Creating combined visualization for {len(criteria_viz_data)} criteria")
-                combined_output = plot_combined_criteria(
-                    criteria_data=criteria_viz_data,
-                    time_step=time_step,
-                    output_dir=output_dir
-                )
-                logger.info(f"Saved combined criteria visualization to {combined_output}")
+                if criteria_viz_data:  # Only proceed if we have data to visualize
+                    logger.info(f"Creating combined visualization for {len(criteria_viz_data)} criteria")
+                    combined_output = plot_combined_criteria(
+                        criteria_data=criteria_viz_data,
+                        time_step=time_step,
+                        output_dir=output_dir
+                    )
+                    logger.info(f"Saved combined criteria visualization to {combined_output}")
+                else:
+                    logger.warning("No criteria data available for visualization")
             except Exception as e:
                 logger.error(f"Error creating combined visualization: {str(e)}")
                 import traceback
@@ -317,6 +385,15 @@ class CycloneDetector:
         Возвращает:
             Объект Cyclone.
         """
+        # DEBUG: Log all candidate attributes before creation
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[CycloneDetector._create_cyclone] Creating cyclone from candidate: {candidate}")
+        # Validate all required attributes are not None
+        required_fields = ['latitude', 'longitude']
+        for field in required_fields:
+            if field not in candidate or candidate[field] is None:
+                logger.error(f"Cannot create cyclone: candidate missing or has None for required field '{field}'. Candidate: {candidate}")
+                raise ValueError(f"Cannot create cyclone: missing or None '{field}'")
         # Получаем основные характеристики циклона
         latitude = candidate['latitude']
         longitude = candidate['longitude']
@@ -525,6 +602,12 @@ class CycloneTracker:
                 
                 # Применяем назначения
                 for current_idx, next_idx in assignments:
+                    # Validate indices to prevent index out of range errors
+                    if current_idx >= len(current_cyclones) or next_idx >= len(next_cyclones):
+                        logger.warning(f"Invalid index pair: current_idx={current_idx}, next_idx={next_idx}, "  
+                                      f"list lengths: current={len(current_cyclones)}, next={len(next_cyclones)}")
+                        continue
+                        
                     current = current_cyclones[current_idx]
                     next_cyclone = next_cyclones[next_idx]
                     

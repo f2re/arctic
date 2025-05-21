@@ -31,7 +31,7 @@ class Cyclone:
     """
     
     def __init__(self, latitude: float, longitude: float, time: Union[str, datetime, pd.Timestamp],
-                central_pressure: float, dataset: Optional[xr.Dataset] = None):
+                central_pressure: float, dataset: Optional[xr.Dataset] = None, detector: Optional['CycloneDetector'] = None) -> None:
         """
         Инициализирует циклон с базовыми свойствами.
         
@@ -41,6 +41,7 @@ class Cyclone:
             time: Время наблюдения.
             central_pressure: Центральное давление на уровне моря (гПа).
             dataset: Исходный набор метеорологических данных.
+            detector: Детектор циклонов (необязательный).
         """
         # Положение и время
         self.latitude = float(latitude)
@@ -60,11 +61,11 @@ class Cyclone:
         self.central_pressure = float(central_pressure)
         self.track_id = None
         
-        # Рассчитываем параметры, если доступен набор данных
-        if dataset is not None:
-            self.parameters = self._calculate_parameters(dataset)
+        # Сохраняем детектор и инициализируем параметры
+        self.detector = detector
+        if dataset is not None and detector is not None:
+            self.parameters = self._calculate_parameters(dataset, detector)
         else:
-            # Создаем пустой объект параметров
             self.parameters = CycloneParameters(
                 central_pressure=central_pressure,
                 vorticity_850hPa=None,
@@ -696,9 +697,9 @@ class Cyclone:
         self.intensity_history.append((new_time_obj, new_pressure))
         self.track.append((new_latitude, new_longitude, new_time_obj))
         
-        # Обновляем параметры, если доступен набор данных
-        if dataset is not None:
-            self.parameters = self._calculate_parameters(dataset)
+        # Обновляем параметры, если доступен набор данных и детектор
+        if dataset is not None and getattr(self, 'detector', None) is not None:
+            self.parameters = self._calculate_parameters(dataset, self.detector)
         
         # Обновляем стадию жизненного цикла
         self._update_life_stage()

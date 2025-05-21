@@ -46,6 +46,7 @@ class VorticityCriterion(BaseCriterion):
         self.pressure_level = pressure_level
         self.window_size = window_size
         self.smooth_sigma = smooth_sigma
+        self.vorticity_field = None
         
         logger.debug(f"Инициализирован критерий завихренности: "
                     f"min_latitude={min_latitude}, "
@@ -146,6 +147,9 @@ class VorticityCriterion(BaseCriterion):
             # Apply smoothing if specified
             if self.smooth_sigma > 0:
                 relative_vorticity_values = ndimage.gaussian_filter(relative_vorticity_values, sigma=self.smooth_sigma)
+                
+            # Store the vorticity field for visualization
+            self.vorticity_field = relative_vorticity_values
 
             if debug_plot and output_dir:
                 try:

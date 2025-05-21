@@ -14,6 +14,9 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 
 from models.cyclone import Cyclone

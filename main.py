@@ -14,6 +14,9 @@ import datetime
 import logging
 from pathlib import Path
 import xarray as xr
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 
 from core.config import ConfigManager
@@ -229,12 +232,12 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     for time_step in dataset.time.values:
         # Debug: log detector id and dataset state before detection
         logger.debug(f"[main.py] Calling detector.detect at time_step={time_step}, detector id={getattr(detector, '_instance_id', id(detector))}, dataset variables={list(dataset.variables.keys())}, dataset shape={[v.shape for v in dataset.data_vars.values()]}")
-        try:
-            cyclones = detector.detect(dataset, time_step)
-            all_cyclones[time_step] = cyclones
-            logger.info(f"Detected {len(cyclones)} cyclones at {time_step}")
-        except Exception as e:
-            logger.error(f"Error detecting cyclones at time {time_step}: {str(e)}")
+        # try:
+        cyclones = detector.detect(dataset, time_step)
+        all_cyclones[time_step] = cyclones
+        logger.info(f"Detected {len(cyclones)} cyclones at {time_step}")
+        # except Exception as e:
+        #     logger.error(f"Error detecting cyclones at time {time_step}: {str(e)}")
     
     # Initialize cyclone tracker
     tracker = CycloneTracker()

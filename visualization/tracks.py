@@ -967,9 +967,9 @@ def plot_cyclone_tracks(tracks: List[List[Cyclone]],
             if all_pressures:
                 vmin = min(all_pressures)
                 vmax = max(all_pressures)
-                norm = colors.Normalize(vmin=vmin, vmax=vmax)
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
             else:
-                norm = colors.Normalize(vmin=950, vmax=1010)
+                norm = mcolors.Normalize(vmin=950, vmax=1010)
         
         # Plot each track
         for i, track in enumerate(tracks):

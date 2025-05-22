@@ -12,11 +12,11 @@ from typing import Dict, List, Optional, Union, Tuple, Any, Set, Callable
 from pathlib import Path
 from datetime import datetime, timedelta
 import scipy.ndimage as ndimage
-import logging
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
-import warnings
-import uuid
-import os
+import logging
+from functools import partial
+import inspect
 
 from core.exceptions import DetectionError, TrackingError
 from models.cyclone import Cyclone, CycloneType, CycloneParameters
@@ -118,6 +118,28 @@ class CycloneDetector:
         # Устанавливаем активные критерии
         if active_criteria:
             self.criteria_manager.set_active_criteria(active_criteria)
+            # Apply configuration parameters to criteria constructors
+            for name in active_criteria:
+                cls = self.criteria_manager.criteria.get(name)
+                if cls:
+                    sig = inspect.signature(cls.__init__)
+                    settings = criteria_config.get(name, {})
+                    # Remove 'enabled' flag
+                    conf = {k: v for k, v in settings.items() if k != 'enabled'}
+                    # Map config keys to __init__ params
+                    params = {}
+                    for param in list(sig.parameters)[1:]:  # skip 'self'
+                        if param == 'min_latitude':
+                            params['min_latitude'] = self.min_latitude
+                        elif param in conf:
+                            params[param] = conf[param]
+                        elif param.endswith('_threshold') and 'threshold' in conf:
+                            params[param] = conf['threshold']
+                        elif param == 'pressure_level' and 'level' in conf:
+                            params[param] = conf['level']
+                    # Replace class with partial constructor
+                    self.criteria_manager.criteria[name] = partial(cls, **params)
+                    logger.debug(f"Configured criterion {name} with params {params}")
         else:
             logger.warning("В конфигурации не найдены активные критерии, используем стандартные")
     
@@ -247,6 +269,7 @@ class CycloneDetector:
                 
                 # Collect data for combined visualization if debug_plot is enabled
                 if self.debug_plot:
+                    # logger.info(f"Collecting data for combined visualization for {criterion_name}")
                     # Extract data for visualization based on criterion type
                     if criterion_name == 'pressure_laplacian' and hasattr(criterion, 'laplacian_field'):
                         # Get the actual dimensions used in the criterion
@@ -326,6 +349,24 @@ class CycloneDetector:
                             'contour_mask': criterion.contour_mask,
                             'lats': arctic_lats if 'arctic_lats' in locals() else lats,
                             'lons': lons,
+                            'time_step': time_step,
+                            'output_dir': output_dir
+                        }
+                    elif criterion_name == 'pressure_minimum' and hasattr(criterion, 'pressure') or hasattr(criterion, 'pressure_field'):
+                        # Collect data for pressure minimum visualization
+                        lats = dataset.sel(time=time_step).latitude.values
+                        lons = dataset.sel(time=time_step).longitude.values
+                        # Filter to Arctic region for consistency
+                        if hasattr(criterion, 'min_latitude'):
+                            arctic_lats = lats[lats >= criterion.min_latitude]
+                            if hasattr(criterion, 'pressure_field') and len(arctic_lats) != criterion.pressure_field.shape[0]:
+                                logger.warning(f"Pressure minimum latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
+                        # Store the visualization data
+                        criteria_viz_data['pressure_minimum'] = {
+                            'pressure': getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None)),
+                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                            'lons': lons,
+                            'threshold': getattr(criterion, 'pressure_threshold', None),
                             'time_step': time_step,
                             'output_dir': output_dir
                         }

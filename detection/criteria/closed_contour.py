@@ -95,6 +95,10 @@ class ClosedContourCriterion(BaseCriterion):
             # Apply smoothing if needed
             if self.smooth_data:
                 pressure_field = ndimage.gaussian_filter(pressure_field, sigma=self.smooth_sigma)
+            # Store the (smoothed) pressure field for combined visualization
+            self.pressure_field = pressure_field
+            # Placeholder mask for closed contour visualization
+            self.contour_mask = np.zeros_like(pressure_field, dtype=bool)
             
             # Find local minima (potential cyclone centers)
             min_filter = ndimage.minimum_filter(pressure_field, size=3)
@@ -142,7 +146,7 @@ class ClosedContourCriterion(BaseCriterion):
                     lons_2d, lats_2d = np.meshgrid(arctic_data.longitude.values, arctic_data.latitude.values)
                     # Use pressure_field which is already smoothed if self.smooth_data is True
                     plot_pressure_field(
-                        pressure=pressure_field, # Use the (potentially smoothed) pressure field used for detection
+                        pressure=self.pressure_field, # Use the (potentially smoothed) pressure field used for detection
                         lats=lats_2d,
                         lons=lons_2d,
                         time_step=time_step,

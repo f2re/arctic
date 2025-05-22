@@ -94,6 +94,9 @@ class PressureMinimumCriterion(BaseCriterion):
             else:
                 smoothed_field = pressure_field
             
+            # Store the smoothed pressure field for combined visualization
+            self.pressure_field = smoothed_field
+            
             # Находим локальные минимумы
             min_filter = ndimage.minimum_filter(smoothed_field, size=self.window_size)
             local_minima = (smoothed_field == min_filter) & (smoothed_field < self.pressure_threshold)

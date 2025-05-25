@@ -68,3 +68,23 @@ export:
   netcdf:
     compression_level: 4
     include_metadata: true
+
+
+tracking:
+  # Основные параметры трекинга
+  max_distance: 600.0        # км - максимальное расстояние между точками
+  max_time_gap: 18.0         # часы - максимальный временной разрыв
+  max_pressure_change: 25.0  # гПа - максимальное изменение давления
+  min_track_duration: 12.0   # часы - минимальная длительность трека
+  min_track_points: 4        # минимальное количество точек в треке
+  
+  # Debug опции
+  debug_save_csv: false      # сохранять ли debug CSV файлы
+  debug_dir: "debug"         # директория для debug файлов
+  
+  # Алгоритм трекинга
+  algorithm: "nearest_neighbor"  # алгоритм связывания точек
+  cost_weights:              # веса для расчета стоимости связывания
+    distance: 1.0
+    time: 1.0
+    pressure: 0.5

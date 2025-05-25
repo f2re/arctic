@@ -45,12 +45,15 @@ def parse_arguments():
     parser.add_argument('--log-level', type=str, default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging level')
-    
+    parser.add_argument('--debug-tracking', action='store_true',
+                       help='Enable debug mode for tracking (save CSV files)')
+    parser.add_argument('--debug-plot', action='store_true',
+                        help='Enable debug mode for plotting (save images)')
     return parser.parse_args()
 
 
 def run_workflow(start_date, end_date, config_path='config.yaml', 
-                output_dir='output', log_level='INFO'):
+                output_dir='output', log_level='INFO', debug_tracking=False, debug_plot=False):
     """
     Run the complete Arctic Mesocyclone detection workflow.
     
@@ -60,7 +63,9 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
         config_path: Path to configuration file
         output_dir: Directory for output files
         log_level: Logging level
-        
+        debug_tracking: Debug tracking mode
+        debug_plot: Debug plot mode
+    
     Returns:
         Dict containing results summary
     """
@@ -218,7 +223,7 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     logger.info("[ONE-TIME] Instantiating CycloneDetector and registering detection criteria.")
     detector = CycloneDetector(min_latitude=min_latitude, 
                               config=config.config,
-                              debug_plot=True)  # Pass the raw config dictionary
+                              debug_plot=debug_plot)  # Pass the raw config dictionary
     
     # No need to explicitly set criteria - they are now read from config automatically
     # Criteria registration occurs only once in CycloneDetector.__init__
@@ -240,7 +245,13 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
         #     logger.error(f"Error detecting cyclones at time {time_step}: {str(e)}")
     
     # Initialize cyclone tracker
-    tracker = CycloneTracker()
+    tracker = CycloneTracker(max_distance=600.0,      # Увеличено для арктических условий
+        max_time_gap=18.0,       # Увеличено для пропусков данных
+        max_pressure_change=25.0, # Увеличено для быстрого развития
+        min_track_duration=12.0,  # Минимум 12 часов
+        min_track_points=4,       # Минимум 4 точки
+        debug_save_csv=debug_tracking,  # НОВАЯ опция debug
+        debug_dir=str(output_dir / 'tracking_debug') )
     
     # Track cyclones through time
     logger.info("Tracking cyclones...")
@@ -308,9 +319,14 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
     if filtered_tracks:
         most_intense_track = min(filtered_tracks, 
                                 key=lambda track: min([c.central_pressure for c in track]))
-        params_file = output_dir / "cyclone_parameters.png"
-        plot_cyclone_parameters(most_intense_track, params_file)
-        logger.info(f"Saved cyclone parameters plot to {params_file}")
+        
+        # Find the specific cyclone object with the minimum pressure in the most_intense_track
+        min_pressure_cyclone = min(most_intense_track, key=lambda c: c.central_pressure)
+
+        fig, _ = plot_cyclone_parameters(min_pressure_cyclone) # Pass the single cyclone object
+        fig.savefig(output_dir / "cyclone_parameters.png", dpi=300, bbox_inches='tight')
+        plt.close(fig) # Close the figure to free memory
+        logger.info(f"Saved cyclone parameters plot to {output_dir / 'cyclone_parameters.png'}")
     
     logger.info("Workflow completed successfully")
     
@@ -323,7 +339,7 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
             "csv": str(csv_file),
             "tracks_plot": str(tracks_file),
             "density_plot": str(heatmap_file),
-            "parameters_plot": str(params_file) if filtered_tracks else None
+            "parameters_plot": str(output_dir / 'cyclone_parameters.png') if filtered_tracks else None
         }
     }
 
@@ -336,7 +352,9 @@ def main():
         end_date=args.end_date,
         config_path=args.config,
         output_dir=args.output_dir,
-        log_level=args.log_level
+        log_level=args.log_level,
+        debug_tracking=args.debug_tracking,
+        debug_plot=args.debug_plot
     )
     
     if result["status"] == "success":

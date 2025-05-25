@@ -200,8 +200,16 @@ def plot_bidirectional_field(field_data, lats, lons, time_step, output_dir,
         fig, ax = create_polar_stereographic_map(min_latitude=min_latitude, figsize=figsize)
     else:
         fig = ax.figure
-    
+        # For combined plots, ensure the provided ax has the map features and correct extent.
+        # This mirrors the setup done by create_polar_stereographic_map for standalone plots.
+        # It assumes ax is a GeoAxes with a compatible projection (e.g., NorthPolarStereo).
+        ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
+        add_standard_features(ax)  # Add coastlines, borders, lakes
+        add_grid_lines(ax)         # Add gridlines
+        add_circular_boundary(ax)  # Add polar boundary
+
     timestamp = format_timestep(time_step)
+    
     masked_data, lons_mesh, lats_mesh, arctic_mask = prepare_plot_data(
         field_data, lats, lons, min_latitude)
     
@@ -324,6 +332,13 @@ def plot_wind_field(u_wind, v_wind, lats, lons, threshold, time_step, output_dir
         fig, ax = create_polar_stereographic_map(min_latitude=65.0, figsize=(10, 8))
     else:
         fig = ax.figure
+        # For combined plots, ensure the provided ax has the map features and correct extent.
+        # This mirrors the setup done by create_polar_stereographic_map for standalone plots.
+        # It assumes ax is a GeoAxes with a compatible projection (e.g., NorthPolarStereo).
+        ax.set_extent([-180, 180, 65.0, 90], ccrs.PlateCarree()) # Ensure consistent extent
+        add_standard_features(ax)  # Add coastlines, borders, lakes
+        add_grid_lines(ax)         # Add gridlines
+        add_circular_boundary(ax)  # Add polar boundary
     
     timestamp = format_timestep(time_step)
     
@@ -474,7 +489,11 @@ def plot_pressure_field(pressure, lats, lons, time_step, output_dir,
         fig, ax = create_polar_stereographic_map(min_latitude=65.0, figsize=(10, 8))
     else:
         fig = ax.figure
-    
+        ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
+        add_standard_features(ax)  # Add coastlines, borders, lakes
+        add_grid_lines(ax)         # Add gridlines
+        add_circular_boundary(ax)  # Add polar boundary
+
     timestamp = format_timestep(time_step)
     
     # Convert Pa to hPa for better readability if necessary
@@ -610,6 +629,10 @@ def plot_closed_contour_field(pressure, contour_mask, lats, lons, time_step, out
         fig, ax = create_polar_stereographic_map(min_latitude=65.0, figsize=(10, 8))
     else:
         fig = ax.figure
+        ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
+        add_standard_features(ax)  # Add coastlines, borders, lakes
+        add_grid_lines(ax)         # Add gridlines
+        add_circular_boundary(ax)  # Add polar boundary
     
     timestamp = format_timestep(time_step)
     

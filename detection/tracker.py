@@ -361,6 +361,7 @@ class CycloneDetector:
                             arctic_lats = lats[lats >= criterion.min_latitude]
                             if hasattr(criterion, 'pressure_field') and len(arctic_lats) != criterion.pressure_field.shape[0]:
                                 logger.warning(f"Pressure minimum latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
+                        
                         # Store the visualization data
                         criteria_viz_data['pressure_minimum'] = {
                             'pressure': getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None)),
@@ -557,370 +558,559 @@ class CycloneDetector:
         self.criteria_manager.set_active_criteria(criterion_names)
         logger.info(f"Установлены активные критерии обнаружения: {criterion_names}")
 
+import numpy as np
+import pandas as pd
+import csv
+from typing import List, Dict, Optional, Tuple, Any
+from datetime import datetime, timedelta
+import logging
+from scipy.spatial.distance import cdist
+from scipy.optimize import linear_sum_assignment
+from sklearn.cluster import DBSCAN
+from pathlib import Path
+from models.cyclone import Cyclone
+from core.exceptions import TrackingError
+
+logger = logging.getLogger(__name__)
 
 class CycloneTracker:
     """
-    Отслеживает циклоны на протяжении их жизненного цикла.
-    
-    Предоставляет методы для связывания обнаруженных циклонов в разные
-    моменты времени в непрерывные треки, представляющие жизненный цикл циклона.
+    Улучшенная система отслеживания треков арктических циклонов с кластеризацией.
     """
-    
-    def __init__(self, max_distance: float = 500.0, 
-                max_pressure_change: float = 15.0,
-                max_time_gap: int = 12):
+
+    def __init__(self,
+                 max_distance: float = 500.0,  # км - уменьшено для более строгого трекинга
+                 max_time_gap: float = 12.0,   # часы - уменьшено для непрерывности
+                 max_pressure_change: float = 20.0,  # гПа - более реалистично
+                 min_track_duration: float = 9.0,    # часы - минимум 3 временных шага по 3ч
+                 min_track_points: int = 3,           # минимум 3 точки для трека
+                 cluster_distance: float = 100.0,    # км - расстояние для кластеризации
+                 cluster_pressure_diff: float = 5.0, # гПа - разность давления для кластеризации
+                 max_cyclone_speed: float = 120.0,   # км/ч - максимальная физическая скорость
+                 debug_save_csv: bool = False,
+                 debug_dir: str = 'debug'):
         """
-        Инициализирует трекер циклонов.
-        
-        Аргументы:
-            max_distance: Максимальное расстояние (км) для ассоциации циклонов между шагами.
-            max_pressure_change: Максимальное изменение давления (гПа) для ассоциации.
-            max_time_gap: Максимальный разрыв во времени (часы) для отслеживания.
+        Инициализация улучшенного трекера с кластеризацией.
         """
         self.max_distance = max_distance
-        self.max_pressure_change = max_pressure_change
         self.max_time_gap = max_time_gap
+        self.max_pressure_change = max_pressure_change
+        self.min_track_duration = min_track_duration
+        self.min_track_points = min_track_points
+        self.cluster_distance = cluster_distance
+        self.cluster_pressure_diff = cluster_pressure_diff
+        self.max_cyclone_speed = max_cyclone_speed
         
-        logger.info(f"Инициализирован трекер циклонов с параметрами: "
-                   f"max_distance={max_distance} км, "
-                   f"max_pressure_change={max_pressure_change} гПа, "
-                   f"max_time_gap={max_time_gap} ч")
-    
-    def track(self, cyclone_sequences: Dict[Any, List[Cyclone]]) -> List[List[Cyclone]]:
+        # Debug опции
+        self.debug_save_csv = debug_save_csv
+        self.debug_dir = Path(debug_dir)
+        if self.debug_save_csv:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            
+        self.track_counter = 0
+        
+        logger.info(f"Улучшенный трекер: max_dist={max_distance}км, cluster_dist={cluster_distance}км, "
+                   f"min_points={min_track_points}, max_speed={max_cyclone_speed}км/ч")
+
+    def cluster_cyclones_in_timestep(self, cyclones: List[Cyclone]) -> List[Cyclone]:
         """
-        Отслеживает циклоны между временными шагами.
+        Кластеризует близкие циклоны в одном временном шаге для устранения дублей.
         
-        Аргументы:
-            cyclone_sequences: Словарь с временными шагами и обнаруженными циклонами.
+        Args:
+            cyclones: Список циклонов в одном временном шаге
             
-        Возвращает:
-            Список треков циклонов (каждый трек - список объектов Cyclone).
+        Returns:
+            Список представительных циклонов после кластеризации
         """
-        try:
-            # Проверяем входные данные
-            if not cyclone_sequences:
-                logger.warning("Пустой словарь циклонов для отслеживания")
-                return []
+        if len(cyclones) <= 1:
+            return cyclones
             
-            # Сортируем временные шаги
-            time_steps = sorted(cyclone_sequences.keys())
+        # Фильтруем подозрительные точки на полюсе (90°N)
+        realistic_cyclones = []
+        polar_cyclones = []
+        
+        for cyclone in cyclones:
+            if cyclone.latitude >= 89.5:  # Очень близко к полюсу
+                polar_cyclones.append(cyclone)
+            else:
+                realistic_cyclones.append(cyclone)
+        
+        if polar_cyclones:
+            logger.warning(f"Найдено {len(polar_cyclones)} циклонов на полюсе - возможная ошибка обнаружения")
             
-            if len(time_steps) < 2:
-                logger.warning("Недостаточно временных шагов для отслеживания")
-                return [[c] for c in cyclone_sequences.get(time_steps[0], [])]
+        # Работаем только с реалистичными циклонами
+        if len(realistic_cyclones) <= 1:
+            return realistic_cyclones
             
-            # Словарь для хранения неназначенных циклонов для каждого шага
-            unassigned = {ts: list(cyclones) for ts, cyclones in cyclone_sequences.items()}
-            
-            # Список для хранения треков
-            tracks = []
-            
-            # Словарь для отслеживания активных треков
-            active_tracks = {}  # track_id -> последний циклон в треке
-            
-            # Обрабатываем каждую пару последовательных временных шагов
-            for i in range(len(time_steps) - 1):
-                current_ts = time_steps[i]
-                next_ts = time_steps[i + 1]
-                
-                # Вычисляем разницу во времени между шагами (в часах)
-                time_diff = self._calculate_time_difference(current_ts, next_ts)
-                
-                # Пропускаем, если разрыв слишком большой
-                if time_diff > self.max_time_gap:
-                    logger.warning(f"Слишком большой временной разрыв между {current_ts} и {next_ts}: {time_diff} ч")
-                    continue
-                
-                current_cyclones = unassigned[current_ts]
-                next_cyclones = unassigned[next_ts]
-                
-                if not current_cyclones or not next_cyclones:
-                    continue
-                
-                # Создаем и решаем задачу назначения
-                try:
-                    assignments = self._solve_assignment_problem(
-                        current_cyclones, next_cyclones, time_diff)
-                except ValueError as e:
-                    logger.warning(f"Assignment problem infeasible: {e}")
-                    assignments = []
-                
-                # Применяем назначения
-                for current_idx, next_idx in assignments:
-                    # Validate indices to prevent index out of range errors
-                    if current_idx >= len(current_cyclones) or next_idx >= len(next_cyclones):
-                        logger.warning(f"Invalid index pair: current_idx={current_idx}, next_idx={next_idx}, "  
-                                      f"list lengths: current={len(current_cyclones)}, next={len(next_cyclones)}")
-                        continue
-                        
-                    current = current_cyclones[current_idx]
-                    next_cyclone = next_cyclones[next_idx]
-                    
-                    # Получаем или создаем идентификатор трека
-                    if hasattr(current, 'track_id') and current.track_id:
-                        track_id = current.track_id
-                    else:
-                        track_id = f"track_{len(tracks)}"
-                        current.track_id = track_id
-                    
-                    # Устанавливаем идентификатор трека для следующего циклона
-                    next_cyclone.track_id = track_id
-                    
-                    # Обновляем данные следующего циклона
-                    next_cyclone.age = current.age + time_diff
-                    
-                    # Обновляем или создаем трек
-                    if track_id in active_tracks:
-                        # Находим существующий трек
-                        for track in tracks:
-                            if track[-1].track_id == track_id:
-                                track.append(next_cyclone)
-                                break
-                    else:
-                        # Создаем новый трек
-                        tracks.append([current, next_cyclone])
-                        
-                    # Обновляем активные треки
-                    active_tracks[track_id] = next_cyclone
-                    
-                    # Удаляем назначенные циклоны из списков неназначенных
-                    unassigned[current_ts].remove(current)
-                    unassigned[next_ts].remove(next_cyclone)
-            
-            # Добавляем оставшиеся неназначенные циклоны как одноточечные треки
-            for ts in time_steps:
-                for cyclone in unassigned[ts]:
-                    if not hasattr(cyclone, 'track_id') or not cyclone.track_id:
-                        track_id = f"track_{len(tracks)}"
-                        cyclone.track_id = track_id
-                        tracks.append([cyclone])
-            
-            # Сортируем треки по продолжительности (от наиболее длинных к коротким)
-            tracks.sort(key=len, reverse=True)
-            
-            logger.info(f"Сформировано {len(tracks)} треков циклонов")
-            
-            return tracks
-            
-        except Exception as e:
-            error_msg = f"Ошибка при отслеживании циклонов: {str(e)}"
-            logger.error(error_msg)
-            raise TrackingError(error_msg)
-    
-    def _calculate_time_difference(self, time1: Any, time2: Any) -> float:
-        """
-        Вычисляет разницу между двумя временными точками в часах.
+        # Подготавливаем данные для кластеризации
+        coordinates = np.array([[c.latitude, c.longitude] for c in realistic_cyclones])
+        pressures = np.array([c.central_pressure for c in realistic_cyclones])
         
-        Аргументы:
-            time1: Первая временная точка.
-            time2: Вторая временная точка.
-            
-        Возвращает:
-            Разница во времени в часах.
-        """
-        # Преобразуем входные значения в pandas Timestamp
-        t1 = pd.to_datetime(time1)
-        t2 = pd.to_datetime(time2)
+        # Вычисляем расстояния между всеми парами
+        clusters = []
+        used_indices = set()
         
-        # Вычисляем разницу в часах
-        return (t2 - t1).total_seconds() / 3600
-    
-    def _solve_assignment_problem(self, current_cyclones: List[Cyclone], 
-                                next_cyclones: List[Cyclone],
-                                time_diff: float) -> List[Tuple[int, int]]:
-        """
-        Решает задачу назначения для связывания циклонов между временными шагами.
-        
-        Аргументы:
-            current_cyclones: Список циклонов на текущем временном шаге.
-            next_cyclones: Список циклонов на следующем временном шаге.
-            time_diff: Разница во времени между шагами в часах.
-            
-        Возвращает:
-            Список пар индексов (текущий, следующий) для связывания циклонов.
-        """
-        # Адаптируем максимальное расстояние в зависимости от временного интервала
-        adjusted_max_distance = self.max_distance * (time_diff / 6.0) if time_diff > 6.0 else self.max_distance
-        
-        # Создаем матрицу стоимости
-        n_current = len(current_cyclones)
-        n_next = len(next_cyclones)
-        
-        cost_matrix = np.full((n_current, n_next), np.inf)
-        
-        for i, current in enumerate(current_cyclones):
-            for j, next_cyclone in enumerate(next_cyclones):
-                # Рассчитываем расстояние
-                distance = self._calculate_distance(
-                    current.latitude, current.longitude,
-                    next_cyclone.latitude, next_cyclone.longitude
-                )
-                
-                # Проверяем условия назначения
-                if distance <= adjusted_max_distance:
-                    # Рассчитываем давление и его изменение
-                    pressure_diff = abs(current.central_pressure - next_cyclone.central_pressure)
-                    
-                    if pressure_diff <= self.max_pressure_change:
-                        # Вычисляем стоимость назначения
-                        # Более близкие циклоны и с меньшим изменением давления имеют меньшую стоимость
-                        cost = distance / adjusted_max_distance + pressure_diff / self.max_pressure_change
-                        cost_matrix[i, j] = cost
-        
-        # Находим оптимальные назначения с помощью венгерского алгоритма
-        try:
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        except ValueError as e:
-            logger.warning(f"Assignment problem infeasible: {e}")
-            return []
-        
-        # Фильтруем назначения с бесконечной стоимостью
-        valid_assignments = []
-        for i, j in zip(row_ind, col_ind):
-            if cost_matrix[i, j] < np.inf:
-                valid_assignments.append((i, j))
-        
-        return valid_assignments
-    
-    def _calculate_distance(self, lat1: float, lon1: float, 
-                          lat2: float, lon2: float) -> float:
-        """
-        Вычисляет расстояние между двумя точками на сфере (формула гаверсинуса).
-        
-        Аргументы:
-            lat1: Широта первой точки (градусы).
-            lon1: Долгота первой точки (градусы).
-            lat2: Широта второй точки (градусы).
-            lon2: Долгота второй точки (градусы).
-            
-        Возвращает:
-            Расстояние в километрах.
-        """
-        from math import radians, sin, cos, sqrt, atan2
-        
-        # Конвертируем координаты из градусов в радианы
-        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-        
-        # Формула гаверсинуса
-        dlon = lon2 - lon1
-        dlat = lat2 - lat1
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-        c = 2 * atan2(sqrt(a), sqrt(1-a))
-        r = 6371  # Радиус Земли в километрах
-        
-        return r * c
-    
-    def filter_tracks(self, tracks: List[List[Cyclone]], 
-                     min_duration: float = 6.0,
-                     min_points: int = 3) -> List[List[Cyclone]]:
-        """
-        Фильтрует треки циклонов по минимальной продолжительности и числу точек.
-        
-        Аргументы:
-            tracks: Список треков циклонов.
-            min_duration: Минимальная продолжительность трека в часах.
-            min_points: Минимальное количество точек в треке.
-            
-        Возвращает:
-            Отфильтрованный список треков.
-        """
-        filtered_tracks = []
-        
-        for track in tracks:
-            if len(track) < min_points:
+        for i, cyclone in enumerate(realistic_cyclones):
+            if i in used_indices:
                 continue
                 
-            # Вычисляем продолжительность трека
-            start_time = pd.to_datetime(track[0].time)
-            end_time = pd.to_datetime(track[-1].time)
-            duration = (end_time - start_time).total_seconds() / 3600
+            # Начинаем новый кластер
+            cluster_indices = [i]
+            used_indices.add(i)
             
-            if duration >= min_duration:
-                filtered_tracks.append(track)
-        
-        logger.info(f"Отфильтровано {len(filtered_tracks)} треков из {len(tracks)} "
-                   f"(мин. продолжительность: {min_duration} ч, мин. точек: {min_points})")
-        
-        return filtered_tracks
-    
-    def analyze_lifecycle(self, track: List[Cyclone]) -> Dict[str, Any]:
-        """
-        Анализирует жизненный цикл циклона.
-        
-        Аргументы:
-            track: Трек циклона (список объектов Cyclone).
+            # Ищем близкие циклоны
+            for j in range(i + 1, len(realistic_cyclones)):
+                if j in used_indices:
+                    continue
+                    
+                # Проверяем критерии объединения
+                distance = self.calculate_distance(realistic_cyclones[i], realistic_cyclones[j])
+                pressure_diff = abs(pressures[i] - pressures[j])
+                
+                if distance <= self.cluster_distance and pressure_diff <= self.cluster_pressure_diff:
+                    cluster_indices.append(j)
+                    used_indices.add(j)
             
-        Возвращает:
-            Словарь с характеристиками жизненного цикла.
+            # Создаем представительный циклон
+            if len(cluster_indices) == 1:
+                clusters.append(realistic_cyclones[cluster_indices[0]])
+            else:
+                # Объединяем циклоны - выбираем самый интенсивный (низкое давление)
+                cluster_cyclones = [realistic_cyclones[idx] for idx in cluster_indices]
+                representative = min(cluster_cyclones, key=lambda c: c.central_pressure)
+                
+                # Добавляем информацию о кластеризации
+                representative.clustered_count = len(cluster_cyclones)
+                clusters.append(representative)
+                
+                logger.debug(f"Объединено {len(cluster_cyclones)} циклонов в один")
+        
+        logger.debug(f"Кластеризация: {len(realistic_cyclones)} -> {len(clusters)} циклонов")
+        return clusters
+
+    def calculate_distance(self, cyclone1: Cyclone, cyclone2: Cyclone) -> float:
         """
-        if not track:
+        Вычисляет расстояние между двумя циклонами в километрах.
+        """
+        lat1, lon1 = np.radians(cyclone1.latitude), np.radians(cyclone1.longitude)
+        lat2, lon2 = np.radians(cyclone2.latitude), np.radians(cyclone2.longitude)
+        
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+        
+        return 6371.0 * c  # Радиус Земли в км
+
+    def calculate_time_difference(self, cyclone1: Cyclone, cyclone2: Cyclone) -> float:
+        """
+        Вычисляет разность времени между циклонами в часах.
+        """
+        def parse_time(time_obj):
+            if isinstance(time_obj, str):
+                return pd.to_datetime(time_obj)
+            elif hasattr(time_obj, 'to_pydatetime'):
+                return time_obj.to_pydatetime()
+            else:
+                return time_obj
+
+        time1 = parse_time(cyclone1.time)
+        time2 = parse_time(cyclone2.time)
+        
+        return abs((time2 - time1).total_seconds() / 3600.0)
+
+    def calculate_cyclone_compatibility(self, cyclone1: Cyclone, cyclone2: Cyclone) -> Tuple[bool, float]:
+        """
+        Улучшенная проверка совместимости циклонов с физическими ограничениями.
+        
+        Returns:
+            Tuple (is_compatible, cost) - совместимость и стоимость связи
+        """
+        # Временная разность
+        time_diff = self.calculate_time_difference(cyclone1, cyclone2)
+        if time_diff > self.max_time_gap:
+            return False, np.inf
+            
+        # Пространственное расстояние
+        distance = self.calculate_distance(cyclone1, cyclone2)
+        if distance > self.max_distance:
+            return False, np.inf
+            
+        # Физическая скорость перемещения
+        if time_diff > 0:
+            speed_kmh = distance / time_diff
+            if speed_kmh > self.max_cyclone_speed:
+                return False, np.inf
+        
+        # Изменение давления
+        pressure_change = abs(cyclone1.central_pressure - cyclone2.central_pressure)
+        if pressure_change > self.max_pressure_change:
+            return False, np.inf
+            
+        # Вычисляем нормализованную стоимость
+        distance_cost = distance / self.max_distance
+        time_cost = time_diff / self.max_time_gap
+        pressure_cost = pressure_change / self.max_pressure_change
+        
+        # Комбинированная стоимость с весами
+        total_cost = 0.5 * distance_cost + 0.3 * time_cost + 0.2 * pressure_cost
+        
+        return True, total_cost
+
+    def find_best_matches_hungarian(self, current_cyclones: List[Cyclone],
+                                  previous_cyclones: List[Cyclone]) -> Dict[int, int]:
+        """
+        Использует венгерский алгоритм для оптимального назначения циклонов.
+        """
+        if not current_cyclones or not previous_cyclones:
             return {}
+
+        n_current = len(current_cyclones)
+        n_previous = len(previous_cyclones)
+
+        # Создаем матрицу стоимостей
+        cost_matrix = np.full((n_current, n_previous), np.inf)
+
+        for i, current in enumerate(current_cyclones):
+            for j, previous in enumerate(previous_cyclones):
+                compatible, cost = self.calculate_cyclone_compatibility(previous, current)
+                if compatible:
+                    cost_matrix[i, j] = cost
+
+        # Применяем венгерский алгоритм
+        # Заменяем inf на большое число для решения
+        finite_cost_matrix = np.where(np.isinf(cost_matrix), 1e6, cost_matrix)
         
-        # Извлекаем основные характеристики
-        times = [pd.to_datetime(c.time) for c in track]
-        pressures = [c.central_pressure for c in track]
-        latitudes = [c.latitude for c in track]
-        longitudes = [c.longitude for c in track]
+        try:
+            row_indices, col_indices = linear_sum_assignment(finite_cost_matrix)
+            
+            # Фильтруем назначения с бесконечной стоимостью
+            matches = {}
+            for i, j in zip(row_indices, col_indices):
+                if cost_matrix[i, j] < np.inf:
+                    matches[i] = j
+            
+            return matches
+            
+        except Exception as e:
+            logger.warning(f"Ошибка в венгерском алгоритме: {e}, используем жадный подход")
+            return self.find_best_matches(current_cyclones, previous_cyclones)
+
+    def find_best_matches(self, current_cyclones: List[Cyclone],
+                         previous_cyclones: List[Cyclone]) -> Dict[int, int]:
+        """
+        Жадный алгоритм назначения как запасной вариант.
+        """
+        if not current_cyclones or not previous_cyclones:
+            return {}
+
+        # Создаем список всех возможных соединений
+        connections = []
+        for i, current in enumerate(current_cyclones):
+            for j, previous in enumerate(previous_cyclones):
+                compatible, cost = self.calculate_cyclone_compatibility(previous, current)
+                if compatible:
+                    connections.append((cost, i, j))
+
+        # Сортируем по стоимости
+        connections.sort()
+
+        # Выбираем лучшие непересекающиеся соединения
+        matches = {}
+        used_previous = set()
         
-        # Продолжительность жизненного цикла
-        duration = (times[-1] - times[0]).total_seconds() / 3600
+        for cost, i, j in connections:
+            if i not in matches and j not in used_previous:
+                matches[i] = j
+                used_previous.add(j)
+
+        return matches
+
+    def track(self, all_cyclones: Dict[Any, List[Cyclone]]) -> List[List[Cyclone]]:
+        """
+        Основной метод трекинга с кластеризацией и венгерским алгоритмом.
+        """
+        logger.info(f"Начинаем улучшенный трекинг для {len(all_cyclones)} временных шагов")
         
-        # Минимальное давление и момент его достижения
-        min_pressure = min(pressures)
-        min_pressure_idx = pressures.index(min_pressure)
-        min_pressure_time = times[min_pressure_idx]
+        # Этап 1: Кластеризация в каждом временном шаге
+        clustered_cyclones = {}
+        total_before = 0
+        total_after = 0
         
-        # Время от генезиса до достижения минимального давления
-        time_to_min_pressure = (min_pressure_time - times[0]).total_seconds() / 3600
+        sorted_times = sorted(all_cyclones.keys())
         
-        # Скорость углубления (гПа/час)
-        if min_pressure_idx > 0:
-            deepening_rate = (pressures[0] - min_pressure) / max(1, time_to_min_pressure)
-        else:
-            deepening_rate = 0.0
+        for time_step in sorted_times:
+            original_cyclones = all_cyclones[time_step]
+            total_before += len(original_cyclones)
+            
+            # Применяем кластеризацию
+            clustered = self.cluster_cyclones_in_timestep(original_cyclones)
+            clustered_cyclones[time_step] = clustered
+            total_after += len(clustered)
+            
+            logger.debug(f"Время {time_step}: {len(original_cyclones)} -> {len(clustered)} циклонов")
         
-        # Скорость движения
-        speeds = []
-        for i in range(1, len(track)):
-            distance = self._calculate_distance(
-                latitudes[i-1], longitudes[i-1],
-                latitudes[i], longitudes[i]
+        logger.info(f"Кластеризация завершена: {total_before} -> {total_after} циклонов")
+        
+        # Сохраняем результат кластеризации
+        if self.debug_save_csv:
+            clustered_points = []
+            for cyclones in clustered_cyclones.values():
+                clustered_points.extend(cyclones)
+            self.save_points_to_csv(
+                clustered_points,
+                '01_clustered_points.csv',
+                f"Точки после кластеризации ({len(clustered_points)} шт.)"
             )
-            time_diff = (times[i] - times[i-1]).total_seconds() / 3600
+        
+        # Этап 2: Трекинг с венгерским алгоритмом
+        active_tracks = []
+        completed_tracks = []
+        previous_cyclones = []
+
+        for step_num, time_step in enumerate(sorted_times):
+            current_cyclones = clustered_cyclones[time_step]
+            
+            if not current_cyclones:
+                previous_cyclones = []
+                continue
+
+            logger.debug(f"Шаг {step_num + 1}/{len(sorted_times)}: {time_step} - {len(current_cyclones)} циклонов")
+
+            if not previous_cyclones:
+                # Первый шаг - создаем новые треки
+                for cyclone in current_cyclones:
+                    track_id = self._generate_track_id()
+                    cyclone.track_id = track_id
+                    active_tracks.append([cyclone])
+                logger.info(f"Создано {len(current_cyclones)} новых треков")
+            else:
+                # Применяем венгерский алгоритм
+                matches = self.find_best_matches_hungarian(current_cyclones, previous_cyclones)
+                
+                # Обновляем треки
+                new_active_tracks = []
+                matched_current = set()
+                
+                for prev_idx, curr_idx in matches.items():
+                    # Находим трек с предыдущим циклоном
+                    for track in active_tracks:
+                        if track[-1] == previous_cyclones[curr_idx]: 
+                            # Продолжаем трек
+                            current_cyclones[prev_idx].track_id = track[-1].track_id 
+                            track.append(current_cyclones[prev_idx]) 
+                            new_active_tracks.append(track)
+                            matched_current.add(prev_idx) 
+                            break
+
+                # Завершаем треки без продолжения
+                for track in active_tracks:
+                    if track not in new_active_tracks:
+                        completed_tracks.append(track)
+
+                # Создаем новые треки для несопоставленных циклонов
+                new_tracks_count = 0
+                for i, cyclone in enumerate(current_cyclones):
+                    if i not in matched_current:
+                        track_id = self._generate_track_id()
+                        cyclone.track_id = track_id
+                        new_active_tracks.append([cyclone])
+                        new_tracks_count += 1
+
+                active_tracks = new_active_tracks
+                logger.debug(f"Назначений: {len(matches)}, новых треков: {new_tracks_count}")
+
+            previous_cyclones = current_cyclones
+
+        # Завершаем оставшиеся треки
+        completed_tracks.extend(active_tracks)
+        
+        logger.info(f"Трекинг завершен: создано {len(completed_tracks)} треков")
+        
+        # Debug сохранение
+        if self.debug_save_csv:
+            all_tracked_points = []
+            for track in completed_tracks:
+                all_tracked_points.extend(track)
+            self.save_points_to_csv(
+                all_tracked_points,
+                '02_tracks_after_hungarian.csv',
+                f"Все точки после трекинга ({len(all_tracked_points)} шт.) в {len(completed_tracks)} треках"
+            )
+        
+        return completed_tracks
+
+    def filter_tracks(self, tracks: List[List[Cyclone]],
+                     min_duration: float = None,
+                     min_points: int = None) -> List[List[Cyclone]]:
+        """
+        Улучшенная фильтрация треков с физическими критериями.
+        """
+        if min_duration is None:
+            min_duration = self.min_track_duration
+        if min_points is None:
+            min_points = self.min_track_points
+
+        filtered_tracks = []
+        
+        filter_stats = {
+            'original': len(tracks),
+            'too_few_points': 0,
+            'too_short_duration': 0,
+            'unrealistic_movement': 0,
+            'pressure_unrealistic': 0,
+            'passed': 0
+        }
+
+        for track in tracks:
+            if len(track) < min_points:
+                filter_stats['too_few_points'] += 1
+                continue
+
+            # Сортируем по времени
+            track_sorted = sorted(track, key=lambda c: c.time)
+
+            # Проверяем длительность
+            duration_hours = self._calculate_track_duration(track_sorted)
+            if duration_hours < min_duration:
+                filter_stats['too_short_duration'] += 1
+                continue
+
+            # Проверяем реалистичность движения
+            if not self._is_movement_realistic(track_sorted):
+                filter_stats['unrealistic_movement'] += 1
+                continue
+
+            # Проверяем реалистичность давления
+            if not self._is_pressure_realistic(track_sorted):
+                filter_stats['pressure_unrealistic'] += 1
+                continue
+
+            filtered_tracks.append(track_sorted)
+            filter_stats['passed'] += 1
+
+        logger.info(f"Фильтрация: {filter_stats}")
+        
+        # Debug сохранение
+        if self.debug_save_csv:
+            final_points = []
+            for track in filtered_tracks:
+                final_points.extend(track)
+            self.save_points_to_csv(
+                final_points,
+                '03_final_filtered_tracks.csv',
+                f"Финальные треки после фильтрации ({len(final_points)} шт.) в {len(filtered_tracks)} треках"
+            )
+
+        return filtered_tracks
+
+    def _is_movement_realistic(self, track: List[Cyclone]) -> bool:
+        """Проверяет реалистичность движения циклона."""
+        for i in range(len(track) - 1):
+            curr = track[i]
+            next_cyclone = track[i + 1]
+            
+            distance = self.calculate_distance(curr, next_cyclone)
+            time_diff = self.calculate_time_difference(curr, next_cyclone)
+            
             if time_diff > 0:
                 speed = distance / time_diff
-                speeds.append(speed)
+                if speed > self.max_cyclone_speed:
+                    return False
+        return True
+
+    def _is_pressure_realistic(self, track: List[Cyclone]) -> bool:
+        """Проверяет реалистичность изменений давления."""
+        pressures = [c.central_pressure for c in track]
         
-        mean_speed = np.mean(speeds) if speeds else 0.0
-        max_speed = np.max(speeds) if speeds else 0.0
+        # Проверяем диапазон
+        min_pressure = min(pressures)
+        max_pressure = max(pressures)
         
-        # Общее пройденное расстояние
-        total_distance = sum([
-            self._calculate_distance(
-                latitudes[i-1], longitudes[i-1],
-                latitudes[i], longitudes[i]
-            )
-            for i in range(1, len(track))
-        ])
+        if min_pressure < 900 or max_pressure > 1050:  # Нереалистичные значения
+            return False
         
-        # Результат анализа
-        result = {
-            'track_id': track[0].track_id,
-            'genesis_time': times[0],
-            'lysis_time': times[-1],
-            'duration_hours': duration,
-            'min_pressure': min_pressure,
-            'min_pressure_time': min_pressure_time,
-            'time_to_min_pressure': time_to_min_pressure,
-            'deepening_rate': deepening_rate,
-            'mean_speed': mean_speed,
-            'max_speed': max_speed,
-            'total_distance': total_distance,
-            'num_points': len(track)
-        }
+        # Проверяем скорость изменения давления
+        max_change_rate = 10.0  # гПа/час
         
-        return result
-    
+        for i in range(len(track) - 1):
+            curr = track[i]
+            next_cyclone = track[i + 1]
+            
+            pressure_change = abs(curr.central_pressure - next_cyclone.central_pressure)
+            time_diff = self.calculate_time_difference(curr, next_cyclone)
+            
+            if time_diff > 0:
+                change_rate = pressure_change / time_diff
+                if change_rate > max_change_rate:
+                    return False
+        
+        return True
+
+    def _calculate_track_duration(self, track: List[Cyclone]) -> float:
+        """Вычисляет длительность трека в часах."""
+        if len(track) < 2:
+            return 0.0
+        
+        start_time = track[0].time
+        end_time = track[-1].time
+        
+        if isinstance(start_time, str):
+            start_time = pd.to_datetime(start_time)
+        if isinstance(end_time, str):
+            end_time = pd.to_datetime(end_time)
+        
+        return (end_time - start_time).total_seconds() / 3600.0
+
+    def _generate_track_id(self) -> str:
+        """Генерирует уникальный ID для трека."""
+        self.track_counter += 1
+        return f"ARCTIC_TRACK_{self.track_counter:06d}"
+
+    def save_points_to_csv(self, points: List[Cyclone], filename: str, description: str = ""):
+        """
+        Сохраняет точки циклонов в CSV файл для отладки.
+        """
+        if not self.debug_save_csv:
+            return
+
+        filepath = self.debug_dir / filename
+
+        try:
+            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Заголовок с описанием
+                writer.writerow([f"# {description}"])
+                writer.writerow([f"# Количество точек: {len(points)}"])
+                writer.writerow([f"# Время создания: {datetime.now()}"])
+                writer.writerow([]) # Пустая строка
+                
+                # Заголовки колонок
+                writer.writerow([
+                    'track_id', 'latitude', 'longitude', 'time',
+                    'central_pressure', 'clustered_count', 'step_number'
+                ])
+                
+                # Данные точек
+                for i, cyclone in enumerate(points):
+                    track_id = getattr(cyclone, 'track_id', '')
+                    clustered_count = getattr(cyclone, 'clustered_count', 1)
+                    
+                    writer.writerow([
+                        track_id,
+                        cyclone.latitude,
+                        cyclone.longitude,
+                        cyclone.time,
+                        cyclone.central_pressure,
+                        clustered_count,
+                        i + 1
+                    ])
+                    
+            logger.info(f"Сохранено {len(points)} точек в {filepath} - {description}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения debug CSV {filepath}: {str(e)}")
 
 
 def format_timestep(time_step):

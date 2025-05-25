@@ -1001,9 +1001,9 @@ def plot_cyclone_tracks(tracks: List[List[Cyclone]],
                 else:
                     track_id = f"Track {i+1}"
                 
-                ax.text(lons[0], lats[0], track_id, transform=ccrs.PlateCarree(),
-                       fontsize=7, ha='right', va='bottom', bbox=dict(
-                           boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.7))
+                # ax.text(lons[0], lats[0], track_id, transform=ccrs.PlateCarree(),
+                #        fontsize=7, ha='right', va='bottom', bbox=dict(
+                #            boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.7))
             else:
                 # Use a predefined set of colors
                 colors_list = plt.cm.tab10.colors

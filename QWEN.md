@@ -191,8 +191,136 @@ for t in time_steps:
     find_cyclones(t)
 ```
 
-## Code running
-when run code you must activate env:
+## Code Running
+
+When running Python files, you must always work within a virtual environment to ensure you're using the correct dependencies and to avoid conflicts with system packages.
+
+### Setting Up the Virtual Environment
+
+If a virtual environment doesn't exist yet, create one:
+
+```bash
+# Create a virtual environment named 'venv'
+python3 -m venv venv
+
+# Activate the environment (for bash/zsh users)
+source venv/bin/activate
+
+# Upgrade pip to the latest version
+pip install --upgrade pip
+
+# Install project dependencies
+pip install -r requirements.txt
+
+# Install the project in development mode
+pip install -e .
+```
+
+### Activating the Environment
+
+Once created, activate the virtual environment before running any Python code:
+
+For bash/zsh users:
 ```bash
 source venv/bin/activate
+```
+
+For fish shell users:
+```bash
+source venv/bin/activate.fish
+```
+
+For csh/tcsh users:
+```bash
+source venv/bin/activate.csh
+```
+
+### Running Python Files
+
+Once the environment is activated, you can run Python files directly:
+
+```bash
+# Run the main workflow for a specific date range
+python main.py --start-date 2023-01-01 --end-date 2023-01-01 --output-dir output
+
+# Run the test script for a single day
+python test_single_day.py
+
+# Run a specific module
+python -m core.config
+
+# Run tests (if pytest is installed)
+pytest tests/
+```
+
+### Project Structure and Key Components
+
+The ArcticCyclone project has the following key directories and components:
+
+- `main.py` - Main entry point for the workflow
+- `core/` - Core system components (configuration, logging, exceptions)
+- `data/` - Data acquisition and processing modules
+- `detection/` - Cyclone detection algorithms and criteria
+- `models/` - Data models for cyclones and parameters
+- `visualization/` - Visualization tools for tracks, heatmaps, and parameters
+- `export/` - Data export functionality (CSV, NetCDF)
+- `analysis/` - Statistical analysis and climatology tools
+
+### Verifying Environment Activation
+
+After activating the environment, you can verify it's active by checking that your shell prompt is prefixed with `(venv)` and by running:
+
+```bash
+which python
+# Should show a path pointing to your venv directory
+
+pip list
+# Should show the packages installed in your virtual environment
+```
+
+### Deactivating the Environment
+
+When you're finished working, deactivate the environment:
+
+```bash
+deactivate
+```
+
+### Example Complete Workflow
+
+Here's a complete example workflow:
+
+```bash
+# 1. Create and activate the environment
+python3 -m venv venv
+source venv/bin/activate
+
+# 2. Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
+
+# 3. Run a test
+python test_single_day.py
+
+# 4. Run the main workflow for a date range
+python main.py --start-date 2023-01-01 --end-date 2023-01-05 --output-dir results
+
+# 5. Deactivate when finished
+deactivate
+```
+
+### Debugging and Development Options
+
+For development and debugging, you can enable additional options:
+
+```bash
+# Enable debug tracking mode (saves intermediate CSV files)
+python main.py --start-date 2023-01-01 --end-date 2023-01-01 --debug-tracking
+
+# Enable debug plotting mode (saves additional diagnostic plots)
+python main.py --start-date 2023-01-01 --end-date 2023-01-01 --debug-plot
+
+# Enable detailed logging
+python main.py --start-date 2023-01-01 --end-date 2023-01-01 --log-level DEBUG
 ```

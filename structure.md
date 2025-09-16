@@ -1,4 +1,4 @@
-/Users/meteo/Documents/WWW/arctic/         # Root project directory
+/home/meteo/arctic_git/
 ├── analysis/                   # Cyclone analysis capabilities
 │   ├── climatology.py          # Long-term pattern and climatology analysis of cyclones
 │   ├── comparisons.py          # Comparison methods between different cyclones or datasets

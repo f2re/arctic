@@ -71,14 +71,14 @@ class CycloneDetector:
             PressureMinimumCriterion,
             VorticityCriterion,
             ClosedContourCriterion,
-            WindThresholdCriterion,
+            WindCriterion,
             PressureLaplacianCriterion
         )
 
         self.criteria_manager.register_criterion('pressure_minimum', PressureMinimumCriterion)
         self.criteria_manager.register_criterion('vorticity', VorticityCriterion)
         self.criteria_manager.register_criterion('closed_contour', ClosedContourCriterion)
-        self.criteria_manager.register_criterion('wind_threshold', WindThresholdCriterion)
+        self.criteria_manager.register_criterion('wind', WindCriterion)
         self.criteria_manager.register_criterion('pressure_laplacian', PressureLaplacianCriterion)
         
         # Настраиваем стандартную комбинацию критериев
@@ -137,6 +137,10 @@ class CycloneDetector:
                             params[param] = conf['threshold']
                         elif param == 'pressure_level' and 'level' in conf:
                             params[param] = conf['level']
+                        elif name == 'wind' and param == 'thresholds' and 'thresholds' in conf:
+                            params[param] = conf['thresholds']
+                        elif name == 'wind' and param == 'polar_filtering' and 'polar_filtering' in conf:
+                            params[param] = conf['polar_filtering']
                     # Replace class with partial constructor
                     self.criteria_manager.criteria[name] = partial(cls, **params)
                     logger.debug(f"Configured criterion {name} with params {params}")
@@ -352,25 +356,28 @@ class CycloneDetector:
                             'time_step': time_step,
                             'output_dir': output_dir
                         }
-                    elif criterion_name == 'pressure_minimum' and hasattr(criterion, 'pressure') or hasattr(criterion, 'pressure_field'):
+                    elif criterion_name == 'pressure_minimum' and (hasattr(criterion, 'pressure') or hasattr(criterion, 'pressure_field')):
                         # Collect data for pressure minimum visualization
                         lats = dataset.sel(time=time_step).latitude.values
                         lons = dataset.sel(time=time_step).longitude.values
                         # Filter to Arctic region for consistency
                         if hasattr(criterion, 'min_latitude'):
                             arctic_lats = lats[lats >= criterion.min_latitude]
+                            arctic_lons = lons  # Assuming longitude dimension stays the same
                             if hasattr(criterion, 'pressure_field') and len(arctic_lats) != criterion.pressure_field.shape[0]:
                                 logger.warning(f"Pressure minimum latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
                         
                         # Store the visualization data
-                        criteria_viz_data['pressure_minimum'] = {
-                            'pressure': getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None)),
-                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
-                            'lons': lons,
-                            'threshold': getattr(criterion, 'pressure_threshold', None),
-                            'time_step': time_step,
-                            'output_dir': output_dir
-                        }
+                        pressure_data = getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None))
+                        if pressure_data is not None:
+                            criteria_viz_data['pressure_minimum'] = {
+                                'pressure': pressure_data,
+                                'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                                'lons': arctic_lons if 'arctic_lons' in locals() else lons,
+                                'threshold': getattr(criterion, 'pressure_threshold', None),
+                                'time_step': time_step,
+                                'output_dir': output_dir
+                            }
                 
             except Exception as e:
                 logger.error(f"Ошибка при применении критерия {criterion_name}: {str(e)}")

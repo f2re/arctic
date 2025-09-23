@@ -203,6 +203,7 @@ def plot_bidirectional_field(field_data, lats, lons, time_step, output_dir,
         # For combined plots, ensure the provided ax has the map features and correct extent.
         # This mirrors the setup done by create_polar_stereographic_map for standalone plots.
         # It assumes ax is a GeoAxes with a compatible projection (e.g., NorthPolarStereo).
+        min_latitude = 65.0  # Default Arctic latitude
         ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
         add_standard_features(ax)  # Add coastlines, borders, lakes
         add_grid_lines(ax)         # Add gridlines
@@ -481,6 +482,16 @@ def plot_pressure_field(pressure, lats, lons, time_step, output_dir,
     Returns:
         Path to the saved figure
     """
+    # Check if pressure data is valid
+    if pressure is None:
+        logger.warning("Pressure data is None, skipping plot")
+        return None
+    
+    # Check if pressure data has valid shape
+    if hasattr(pressure, 'shape') and len(pressure.shape) < 2:
+        logger.warning(f"Pressure data has invalid shape: {pressure.shape}, skipping plot")
+        return None
+    
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -489,6 +500,7 @@ def plot_pressure_field(pressure, lats, lons, time_step, output_dir,
         fig, ax = create_polar_stereographic_map(min_latitude=65.0, figsize=(10, 8))
     else:
         fig = ax.figure
+        min_latitude = 65.0  # Default Arctic latitude
         ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
         add_standard_features(ax)  # Add coastlines, borders, lakes
         add_grid_lines(ax)         # Add gridlines
@@ -505,6 +517,13 @@ def plot_pressure_field(pressure, lats, lons, time_step, output_dir,
     # Prepare data for plotting
     masked_pressure, lons_mesh, lats_mesh, arctic_mask = prepare_plot_data(
         pressure_hpa, lats, lons, min_latitude=65.0)
+    
+    # Ensure we have valid data to plot
+    if masked_pressure is None or np.all(np.isnan(masked_pressure)):
+        logger.warning("No valid pressure data to plot, skipping")
+        if standalone:
+            plt.close(fig)
+        return output_path / f"pressure_{timestamp}_no_data.png"
     
     try:
         # Get valid data for visualization range
@@ -629,6 +648,7 @@ def plot_closed_contour_field(pressure, contour_mask, lats, lons, time_step, out
         fig, ax = create_polar_stereographic_map(min_latitude=65.0, figsize=(10, 8))
     else:
         fig = ax.figure
+        min_latitude = 65.0  # Default Arctic latitude
         ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree()) # Ensure consistent extent
         add_standard_features(ax)  # Add coastlines, borders, lakes
         add_grid_lines(ax)         # Add gridlines
@@ -859,6 +879,11 @@ def plot_combined_criteria(criteria_data, time_step, output_dir):
     # Create subplot for each criterion
     for criterion_name, data in criteria_data.items():
         if criterion_name in CRITERION_PLOT_FUNCTIONS:
+            # Check if we have valid data for this criterion
+            if not data or 'pressure' not in data or data['pressure'] is None:
+                logger.warning(f"No valid data for criterion {criterion_name}, skipping")
+                continue
+                
             if current_plot_idx < nrows * ncols:
                 ax = axes.flat[current_plot_idx]
                 plot_func = CRITERION_PLOT_FUNCTIONS[criterion_name]
@@ -866,11 +891,25 @@ def plot_combined_criteria(criteria_data, time_step, output_dir):
                 try:
                     logger.info(f"Adding {criterion_name} to combined plot")
                     plot_data = data.copy()
-                    plot_data['time_step'] = time_step
-                    plot_data['output_dir'] = output_path
+                    
+                    # Remove keys that are passed separately
+                    plot_data.pop('time_step', None)
+                    plot_data.pop('output_dir', None)
+                    
+                    # For combined plots, we need to make sure the axes have the right setup
+                    # This mirrors the setup done by create_polar_stereographic_map for standalone plots
+                    min_latitude = 65.0  # Default Arctic latitude
+                    # Ensure consistent extent
+                    ax.set_extent([-180, 180, min_latitude, 90], ccrs.PlateCarree())
+                    # Add standard geographic features
+                    add_standard_features(ax)
+                    # Add coordinate grid
+                    add_grid_lines(ax)
+                    # Add polar boundary
+                    add_circular_boundary(ax)
                     
                     # Call the plotting function for the specific subplot
-                    plot_path = plot_func(**plot_data, ax=ax, show_title=False)
+                    plot_path = plot_func(**plot_data, time_step=time_step, output_dir=output_path, ax=ax, show_title=False)
                     
                     # Add a title to the subplot
                     ax.set_title(criterion_name.replace('_', ' ').title(), fontsize=10)

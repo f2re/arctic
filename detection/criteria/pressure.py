@@ -94,7 +94,8 @@ class PressureMinimumCriterion(BaseCriterion):
             else:
                 smoothed_field = pressure_field
             
-            # Store the smoothed pressure field for combined visualization
+            # Store the original and smoothed pressure field for combined visualization
+            self.pressure = pressure_field
             self.pressure_field = smoothed_field
             
             # Находим локальные минимумы

@@ -8,11 +8,13 @@
 from .tracker import CycloneDetector, CycloneTracker
 from .validators import DetectionValidator
 from .criteria import CriteriaManager, BaseCriterion
+from .multi_criteria_validator import MultiCriteriaValidator
 
 __all__ = [
     'CycloneDetector',
     'CycloneTracker',
     'DetectionValidator',
     'CriteriaManager',
-    'BaseCriterion'
+    'BaseCriterion',
+    'MultiCriteriaValidator'
 ]

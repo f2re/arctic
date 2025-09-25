@@ -197,13 +197,23 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
                 combined_dataset = xr.merge([combined_dataset, surface_dataset])
             else:
                 combined_dataset = surface_dataset
+            
+            # Ensure time coordinate is properly indexed after merge
+            if 'time' in combined_dataset.dims and not combined_dataset.time.indexes:
+                # If time coordinate doesn't have an index, create one
+                combined_dataset = combined_dataset.set_coords('time').assign_coords(time=combined_dataset.time.values)
         
         # Use the combined dataset for further processing
         dataset = combined_dataset
         
         # Проверка и преобразование координат времени
+        logger.debug(f"Dataset dimensions before time rename: {list(dataset.dims)}")
+        logger.debug(f"Dataset coordinates: {list(dataset.coords)}")
         if 'valid_time' in dataset.dims and 'time' not in dataset.dims:
             logger.info("Обнаружена координата 'valid_time' вместо 'time', выполняется переименование")
+            dataset = dataset.rename({'valid_time': 'time'})
+        elif 'valid_time' in dataset.coords and 'time' not in dataset.coords:
+            logger.info("Обнаружена координата 'valid_time' вместо 'time' в coords, выполняется переименование")
             dataset = dataset.rename({'valid_time': 'time'})
 
         # Фильтрация набора данных по запрошенному временному диапазону

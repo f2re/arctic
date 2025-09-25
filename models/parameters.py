@@ -23,6 +23,8 @@ class CycloneParameters:
     central_pressure: float  # гПа
     vorticity_850hPa: Optional[float] = None  # с^-1
     max_wind_speed: Optional[float] = None  # м/с
+    wind_speed_850hPa: Optional[float] = None  # м/с
+    wind_direction_850hPa: Optional[float] = None  # градусы
     radius: Optional[float] = None  # км
     
     # Термическая структура
@@ -85,6 +87,12 @@ class CycloneParameters:
         if self.max_wind_speed is not None:
             result['max_wind_speed'] = self.max_wind_speed
         
+        if self.wind_speed_850hPa is not None:
+            result['wind_speed_850hPa'] = self.wind_speed_850hPa
+        
+        if self.wind_direction_850hPa is not None:
+            result['wind_direction_850hPa'] = self.wind_direction_850hPa
+        
         if self.radius is not None:
             result['radius'] = self.radius
         
@@ -145,6 +153,12 @@ class CycloneParameters:
         
         if 'max_wind_speed' in data:
             params.max_wind_speed = data['max_wind_speed']
+        
+        if 'wind_speed_850hPa' in data:
+            params.wind_speed_850hPa = data['wind_speed_850hPa']
+        
+        if 'wind_direction_850hPa' in data:
+            params.wind_direction_850hPa = data['wind_direction_850hPa']
         
         if 'radius' in data:
             params.radius = data['radius']

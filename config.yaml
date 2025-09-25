@@ -18,25 +18,29 @@ detection:
   criteria:
     pressure_minimum:
       enabled: true
+      weight: 0.25
       # threshold: 1010.0  # Maximum pressure to consider (hPa)
-      gradient_threshold: 0.5  # Minimum pressure gradient (hPa/100km)
+      gradient_threshold: 1.5  # Minimum pressure gradient (hPa/100km)
     vorticity:
       enabled: true
-      threshold: 5.0e-5  # Minimum vorticity (1/s)
+      weight: 0.30
+      threshold: 10.0e-5  # Minimum vorticity (1/s)
       level: 850  # Pressure level for vorticity analysis (hPa)
     closed_contour:
       enabled: false
+      weight: 0.10
       contour_interval: 5.0  # Pressure contour interval (hPa)
     wind:
       enabled: true
+      weight: 0.40
       # Simple threshold
-      min_speed: 15.0  # Minimum wind speed (m/s)
+      min_speed: 20.0  # Minimum wind speed (m/s)
       
       # Enhanced configuration
       thresholds:
-        surface: 12.0    # 10m wind speed threshold
-        upper: 15.0      # 850hPa wind speed threshold
-        default: 15.0    # Default threshold for other levels
+        surface: 15.0    # 10m wind speed threshold
+        upper: 20.0      # 850hPa wind speed threshold
+        default: 20.0    # Default threshold for other levels
       
       polar_filtering:
         enabled: true
@@ -46,13 +50,55 @@ detection:
       smooth_sigma: 1.5
     pressure_laplacian:
       enabled: true
-      laplacian_threshold: 0.00015  # Threshold for pressure Laplacian (Pa/km²)
+      weight: 0.20
+      laplacian_threshold: 0.0002  # Threshold for pressure Laplacian (Pa/km²)
       smooth_sigma: 3  # Smoothing parameter for pressure field
       window_size: 3  # Window size for finding local maxima
+    size_filter:
+      enabled: true
+      weight: 0.2
+  multi_criteria_validator:
+    # Overall validation threshold (0.0-1.0)
+    validation_threshold: 0.7
+    # Minimum distance for multi-center filtering (km)
+    multi_center_distance: 150.0
+    # Criteria thresholds for scoring
+    thresholds:
+      pressure_minimum:
+        very_strong: 980   # hPa
+        strong: 990        # hPa
+        moderate: 1000     # hPa
+        weak: 1010         # hPa
+      vorticity:
+        very_strong: 5.0e-5  # 1/s
+        strong: 3.0e-5       # 1/s
+        moderate: 1.0e-5     # 1/s
+        weak: 5.0e-6         # 1/s
+      size_filter:
+        optimal_min: 100     # km
+        optimal_max: 800     # km
+        extended_min: 50     # km
+        extended_max: 1000   # km
+      wind_threshold:
+        very_strong: 20      # m/s
+        strong: 20           # m/s
+        moderate: 18         # m/s
+        weak: 15             # m/s
+      wind_850hPa:
+        # Thresholds for wind speed at 850 hPa (m/s)
+        very_strong: 25.0    # m/s
+        strong: 20.0         # m/s
+        moderate: 15.0       # m/s
+        weak: 10.0           # m/s
+      pressure_gradient:
+        very_strong: 2.5     # hPa/100km
+        strong: 1.3          # hPa/100km
+        moderate: 1.0        # hPa/100km
+        weak: 0.7            # hPa/100km
   tracking:
     max_distance: 300.0  # Maximum distance between timesteps (km)
-    max_pressure_change: 10.0  # Maximum pressure change between timesteps (hPa)
-    max_time_gap: 12  # Maximum gap in hours between detections
+    max_pressure_change: 8.0  # Maximum pressure change between timesteps (hPa)
+    max_time_gap: 9  # Maximum gap in hours between detections
     min_duration: 6.0  # Minimum track duration (hours)
     min_points: 3  # Minimum number of points in a valid track
 

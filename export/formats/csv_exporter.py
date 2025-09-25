@@ -218,11 +218,22 @@ class CycloneCSVExporter:
             if hasattr(cyclone.parameters, 'temperature_anomaly'):
                 result['temperature_anomaly'] = cyclone.parameters.temperature_anomaly
         
+        # Добавляем атрибуты валидации, если доступны
+        if hasattr(cyclone, 'validation_score'):
+            result['validation_score'] = getattr(cyclone, 'validation_score')
+        
+        if hasattr(cyclone, 'individual_scores'):
+            individual_scores = getattr(cyclone, 'individual_scores')
+            if isinstance(individual_scores, dict):
+                # Добавляем индивидуальные оценки по критериям
+                for criterion, score in individual_scores.items():
+                    result[f'{criterion}_score'] = score
+        
         # Добавляем другие атрибуты, если есть
         for attr in dir(cyclone):
             if (not attr.startswith('_') and
                 attr not in result and 
-                attr not in ['track', 'intensity_history', 'parameters', 'update'] and
+                attr not in ['track', 'intensity_history', 'parameters', 'update', 'individual_scores', 'validation_score'] and
                 not callable(getattr(cyclone, attr))):
                 
                 value = getattr(cyclone, attr)

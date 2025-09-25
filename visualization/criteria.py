@@ -111,7 +111,6 @@ def prepare_plot_data(field_data, lats, lons, min_latitude=65.0):
     """Prepares data for plotting."""
     # Convert coordinates to a grid if they are 1D
     if lats.ndim == 1 or lons.ndim == 1:
-        logger.info("Converting 1D coordinate arrays to 2D meshgrid for plotting")
         lons_mesh, lats_mesh = np.meshgrid(lons, lats)
     else:
         lons_mesh, lats_mesh = lons, lats
@@ -823,7 +822,7 @@ def register_plot_functions():
     CRITERION_PLOT_FUNCTIONS = {
         'pressure_laplacian': plot_laplacian_field,
         'vorticity': plot_vorticity_field,
-        'wind_threshold': plot_wind_field,
+        'wind': plot_wind_field,
         'closed_contour': plot_closed_contour_field,
         'pressure': plot_pressure_field,
         'pressure_minimum': plot_pressure_field,
@@ -880,7 +879,19 @@ def plot_combined_criteria(criteria_data, time_step, output_dir):
     for criterion_name, data in criteria_data.items():
         if criterion_name in CRITERION_PLOT_FUNCTIONS:
             # Check if we have valid data for this criterion
-            if not data or 'pressure' not in data or data['pressure'] is None:
+            # Different criteria have different required data fields
+            required_field = None
+            if criterion_name in ['pressure_minimum', 'pressure', 'closed_contour']:
+                required_field = 'pressure'
+            elif criterion_name == 'pressure_laplacian':
+                required_field = 'laplacian'
+            elif criterion_name == 'vorticity':
+                required_field = 'vorticity'
+            elif criterion_name == 'wind':
+                required_field = 'u_wind'
+            
+            # Check if required field exists and is not None
+            if not data or (required_field and (required_field not in data or data[required_field] is None)):
                 logger.warning(f"No valid data for criterion {criterion_name}, skipping")
                 continue
                 

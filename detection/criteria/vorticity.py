@@ -77,7 +77,14 @@ class VorticityCriterion(BaseCriterion):
             vorticity_var = None
             
             # Select the specific time step first to simplify processing
-            time_data = dataset.sel(time=time_step)
+            # Handle both 'time' and 'valid_time' coordinates
+            if 'time' in dataset.dims:
+                time_data = dataset.sel(time=time_step)
+            elif 'valid_time' in dataset.dims:
+                time_data = dataset.sel(valid_time=time_step)
+            else:
+                # If neither coordinate exists, use the dataset as is
+                time_data = dataset
             
             # Log available variables for debugging
             logger.debug(f"Available variables: {list(time_data.variables)}")
@@ -242,7 +249,14 @@ class VorticityCriterion(BaseCriterion):
             Имя созданной переменной завихренности.
         """
         # Выбираем временной шаг
-        time_data = dataset.sel(time=time_step)
+        # Handle both 'time' and 'valid_time' coordinates
+        if 'time' in dataset.dims:
+            time_data = dataset.sel(time=time_step)
+        elif 'valid_time' in dataset.dims:
+            time_data = dataset.sel(valid_time=time_step)
+        else:
+            # If neither coordinate exists, use the dataset as is
+            time_data = dataset
         
         # Выбираем нужный уровень давления, если есть измерение уровня
         pressure_level_names = ['level', 'pressure_level', 'lev', 'plev']

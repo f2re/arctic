@@ -2,7 +2,8 @@
 Multi-criteria validator for Arctic cyclone detection.
 
 Provides a system for validating cyclone candidates using multiple weighted criteria
-to reduce false positives while maintaining sensitivity.
+to reduce false positives while maintaining sensitivity. Supports dynamic criteria
+loading from YAML configuration.
 """
 
 import numpy as np
@@ -18,29 +19,196 @@ class MultiCriteriaValidator:
     Multi-criteria validation system for Arctic cyclone detection.
     
     Evaluates candidates based on multiple weighted parameters to reduce false positives.
+    Supports dynamic criteria loading from YAML configuration.
     """
     
-    def __init__(self, weights: Optional[Dict[str, float]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
-        Initialize with configurable weights for each criterion.
+        Initialize with configurable criteria and weights from YAML config.
         
         Args:
-            weights: Dictionary of weights for each criterion
+            config: Configuration dictionary from YAML config file
         """
-        self.weights = weights or {
-            'pressure_minimum': 0.25,
-            'vorticity': 0.30,
-            'size_filter': 0.15,
-            'wind_threshold': 0.20,
-            'pressure_gradient': 0.10
+        # Default criteria configuration
+        self.default_criteria_config = {
+            'pressure_minimum': {
+                'enabled': True,
+                'weight': 0.25,
+                'thresholds': {
+                    'very_strong': 980,
+                    'strong': 990,
+                    'moderate': 1000,
+                    'weak': 1010
+                }
+            },
+            'vorticity': {
+                'enabled': True,
+                'weight': 0.30,
+                'thresholds': {
+                    'very_strong': 5e-5,
+                    'strong': 3e-5,
+                    'moderate': 1e-5,
+                    'weak': 5e-6
+                }
+            },
+            'size_filter': {
+                'enabled': True,
+                'weight': 0.15,
+                'thresholds': {
+                    'optimal_min': 100,
+                    'optimal_max': 800,
+                    'extended_min': 50,
+                    'extended_max': 1000
+                }
+            },
+            'wind_threshold': {
+                'enabled': True,
+                'weight': 0.20,
+                'thresholds': {
+                    'very_strong': 20,
+                    'strong': 15,
+                    'moderate': 12,
+                    'weak': 10
+                }
+            },
+            'pressure_gradient': {
+                'enabled': True,
+                'weight': 0.10,
+                'thresholds': {
+                    'very_strong': 1.5,
+                    'strong': 1.0,
+                    'moderate': 0.7,
+                    'weak': 0.4
+                }
+            },
+            'wind_850hPa': {
+                'enabled': True,
+                'weight': 0.15,
+                'thresholds': {
+                    'very_strong': 25.0,
+                    'strong': 20.0,
+                    'moderate': 15.0,
+                    'weak': 10.0
+                }
+            },
+            
         }
+        
+        # Load configuration from YAML
+        self.criteria_config = self._load_config(config)
+        
+        # Extract weights for active criteria
+        self.weights = self._extract_weights()
         
         # Normalize weights to sum to 1.0
         total_weight = sum(self.weights.values())
         if total_weight > 0:
             self.weights = {k: v/total_weight for k, v in self.weights.items()}
         
-        logger.debug(f"Initialized multi-criteria validator with weights: {self.weights}")
+        logger.debug(f"Initialized multi-criteria validator with config: {self.criteria_config}")
+        logger.debug(f"Active criteria weights: {self.weights}")
+
+    def _load_config(self, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Load criteria configuration from YAML config.
+        
+        Args:
+            config: Configuration dictionary from YAML config file
+            
+        Returns:
+            Dictionary with criteria configuration
+        """
+        if not config or 'detection' not in config:
+            logger.warning("No detection config found, using defaults")
+            return self.default_criteria_config
+            
+        detection_config = config['detection']
+        
+        # Check if we have a dedicated multi_criteria_validator section
+        if 'multi_criteria_validator' in detection_config:
+            validator_config = detection_config['multi_criteria_validator']
+            # Use thresholds from multi_criteria_validator section if available
+            if 'thresholds' in validator_config:
+                thresholds = validator_config['thresholds']
+                # Update default criteria config with these thresholds
+                for criterion_name in self.default_criteria_config:
+                    if criterion_name in thresholds:
+                        self.default_criteria_config[criterion_name]['thresholds'] = thresholds[criterion_name]
+        
+        # Load criteria configuration from the criteria section
+        criteria_config = detection_config.get('criteria', {})
+        final_config = {}
+        
+        # Merge with default configuration
+        for criterion_name, default_config in self.default_criteria_config.items():
+            # Check if criterion exists in config
+            if criterion_name in criteria_config:
+                criterion_settings = criteria_config[criterion_name]
+                
+                # Check if criterion is enabled
+                is_enabled = criterion_settings.get('enabled', default_config['enabled'])
+                
+                # Extract weight
+                weight = criterion_settings.get('weight', default_config['weight'])
+                
+                # Extract thresholds
+                thresholds = default_config['thresholds'].copy()
+                if 'thresholds' in criterion_settings:
+                    thresholds.update(criterion_settings['thresholds'])
+                elif 'threshold' in criterion_settings:
+                    # Handle single threshold case
+                    single_threshold = criterion_settings['threshold']
+                    # Distribute single threshold to all levels proportionally
+                    base_thresholds = default_config['thresholds']
+                    if criterion_name == 'pressure_minimum':
+                        thresholds['very_strong'] = single_threshold
+                        thresholds['strong'] = single_threshold + 10
+                        thresholds['moderate'] = single_threshold + 20
+                        thresholds['weak'] = single_threshold + 30
+                    elif criterion_name == 'vorticity':
+                        thresholds['very_strong'] = single_threshold
+                        thresholds['strong'] = single_threshold * 0.6
+                        thresholds['moderate'] = single_threshold * 0.2
+                        thresholds['weak'] = single_threshold * 0.1
+                    elif criterion_name == 'wind':
+                        thresholds['very_strong'] = single_threshold
+                        thresholds['strong'] = single_threshold * 0.75
+                        thresholds['moderate'] = single_threshold * 0.6
+                        thresholds['weak'] = single_threshold * 0.5
+                    elif criterion_name == 'pressure_gradient':
+                        thresholds['very_strong'] = single_threshold
+                        thresholds['strong'] = single_threshold * 0.66
+                        thresholds['moderate'] = single_threshold * 0.46
+                        thresholds['weak'] = single_threshold * 0.26
+                    elif criterion_name == 'wind_850hPa':
+                        thresholds['very_strong'] = single_threshold
+                        thresholds['strong'] = single_threshold * 0.75
+                        thresholds['moderate'] = single_threshold * 0.6
+                        thresholds['weak'] = single_threshold * 0.5
+                
+                final_config[criterion_name] = {
+                    'enabled': is_enabled,
+                    'weight': weight,
+                    'thresholds': thresholds
+                }
+            else:
+                # Use default configuration
+                final_config[criterion_name] = default_config
+                
+        return final_config
+
+    def _extract_weights(self) -> Dict[str, float]:
+        """
+        Extract weights for active criteria.
+        
+        Returns:
+            Dictionary of weights for active criteria
+        """
+        weights = {}
+        for criterion_name, config in self.criteria_config.items():
+            if config['enabled']:
+                weights[criterion_name] = config['weight']
+        return weights
 
     def validate_candidate(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> Tuple[bool, float, Dict[str, float]]:
         """
@@ -54,38 +222,47 @@ class MultiCriteriaValidator:
             Tuple of (is_valid, total_score, individual_scores) where score is 0-1
         """
         scores = {}
+        active_criteria_count = 0
         
-        # Pressure minimum criterion (0-1 score)
-        scores['pressure_minimum'] = self._validate_pressure_minimum(candidate, dataset)
+        # Apply each active criterion
+        for criterion_name, config in self.criteria_config.items():
+            if config['enabled']:
+                active_criteria_count += 1
+                try:
+                    # Call the appropriate validation method
+                    method_name = f"_validate_{criterion_name}"
+                    if hasattr(self, method_name):
+                        method = getattr(self, method_name)
+                        scores[criterion_name] = method(candidate, dataset, config['thresholds'])
+                    else:
+                        logger.warning(f"Validation method {method_name} not found")
+                        scores[criterion_name] = 0.5  # Neutral score
+                except Exception as e:
+                    logger.debug(f"Error validating {criterion_name}: {str(e)}")
+                    scores[criterion_name] = 0.5  # Neutral score on error
         
-        # Vorticity criterion (0-1 score)
-        scores['vorticity'] = self._validate_vorticity(candidate, dataset)
-        
-        # Size filtering criterion (0-1 score)
-        scores['size_filter'] = self._validate_size(candidate, dataset)
-        
-        # Wind threshold criterion (0-1 score)
-        scores['wind_threshold'] = self._validate_wind(candidate, dataset)
-        
-        # Pressure gradient criterion (0-1 score)
-        scores['pressure_gradient'] = self._validate_pressure_gradient(candidate, dataset)
+        # If no criteria are active, accept all candidates
+        if active_criteria_count == 0:
+            logger.warning("No active criteria found, accepting all candidates")
+            return True, 1.0, {}
         
         # Calculate weighted score
         total_score = sum(scores[criterion] * self.weights[criterion] 
-                         for criterion in self.weights)
+                         for criterion in scores.keys() if criterion in self.weights)
         
         # Candidate is valid if score exceeds threshold (e.g., 0.6)
         is_valid = total_score >= 0.6
         
         return is_valid, total_score, scores
 
-    def _validate_pressure_minimum(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> float:
+    def _validate_pressure_minimum(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
         """
         Validate pressure minimum criterion.
         
         Args:
             candidate: Candidate dictionary
             dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
             
         Returns:
             Score between 0-1
@@ -112,14 +289,13 @@ class MultiCriteriaValidator:
                 pressure = candidate['pressure']
             
             # Score based on pressure value (lower pressure = higher score)
-            # Typical Arctic mesocyclones have pressures 980-1010 hPa
-            if pressure <= 980:
+            if pressure <= thresholds['very_strong']:
                 return 1.0
-            elif pressure <= 990:
+            elif pressure <= thresholds['strong']:
                 return 0.8
-            elif pressure <= 1000:
+            elif pressure <= thresholds['moderate']:
                 return 0.6
-            elif pressure <= 1010:
+            elif pressure <= thresholds['weak']:
                 return 0.4
             else:
                 return 0.0
@@ -128,13 +304,14 @@ class MultiCriteriaValidator:
             logger.debug(f"Error validating pressure minimum: {str(e)}")
             return 0.5  # Neutral score on error
 
-    def _validate_vorticity(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> float:
+    def _validate_vorticity(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
         """
         Validate vorticity criterion.
         
         Args:
             candidate: Candidate dictionary
             dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
             
         Returns:
             Score between 0-1
@@ -161,15 +338,14 @@ class MultiCriteriaValidator:
                 vorticity = candidate['vorticity']
             
             # Score based on vorticity value (higher positive vorticity = higher score)
-            # Typical Arctic mesocyclones have vorticity 1e-5 to 1e-4 1/s
             abs_vorticity = abs(vorticity)
-            if abs_vorticity >= 5e-5:
+            if abs_vorticity >= thresholds['very_strong']:
                 return 1.0
-            elif abs_vorticity >= 3e-5:
+            elif abs_vorticity >= thresholds['strong']:
                 return 0.8
-            elif abs_vorticity >= 1e-5:
+            elif abs_vorticity >= thresholds['moderate']:
                 return 0.6
-            elif abs_vorticity >= 5e-6:
+            elif abs_vorticity >= thresholds['weak']:
                 return 0.4
             else:
                 return 0.0
@@ -178,13 +354,14 @@ class MultiCriteriaValidator:
             logger.debug(f"Error validating vorticity: {str(e)}")
             return 0.5  # Neutral score on error
 
-    def _validate_size(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> float:
+    def _validate_size_filter(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
         """
         Validate size filtering criterion.
         
         Args:
             candidate: Candidate dictionary
             dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
             
         Returns:
             Score between 0-1
@@ -258,16 +435,16 @@ class MultiCriteriaValidator:
                 candidate['area_km2'] = float(area_km2)
             
             # Score based on size (mesoscale systems are 100-800 km)
-            if 100 <= diameter_km <= 800:
+            if thresholds['optimal_min'] <= diameter_km <= thresholds['optimal_max']:
                 return 1.0  # Perfect size
-            elif 50 <= diameter_km <= 1000:
+            elif thresholds['extended_min'] <= diameter_km <= thresholds['extended_max']:
                 # Score decreases as we move away from optimal range
-                if diameter_km < 100:
+                if diameter_km < thresholds['optimal_min']:
                     # Too small but within extended range
-                    return 0.5 + 0.5 * (diameter_km - 50) / 50
+                    return 0.5 + 0.5 * (diameter_km - thresholds['extended_min']) / (thresholds['optimal_min'] - thresholds['extended_min'])
                 else:
                     # Too large but within extended range
-                    return 0.5 + 0.5 * (1000 - diameter_km) / 200
+                    return 0.5 + 0.5 * (thresholds['extended_max'] - diameter_km) / (thresholds['extended_max'] - thresholds['optimal_max'])
             else:
                 return 0.0  # Outside acceptable range
                 
@@ -275,13 +452,14 @@ class MultiCriteriaValidator:
             logger.debug(f"Error validating size: {str(e)}")
             return 0.5  # Neutral score on error
 
-    def _validate_wind(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> float:
+    def _validate_wind_threshold(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
         """
         Validate wind threshold criterion.
         
         Args:
             candidate: Candidate dictionary
             dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
             
         Returns:
             Score between 0-1
@@ -336,14 +514,13 @@ class MultiCriteriaValidator:
                 wind_speed = candidate['wind_speed']
             
             # Score based on wind speed (higher wind = higher score)
-            # Typical Arctic mesocyclones have wind speeds 10-25 m/s
-            if wind_speed >= 20:
+            if wind_speed >= thresholds['very_strong']:
                 return 1.0
-            elif wind_speed >= 15:
+            elif wind_speed >= thresholds['strong']:
                 return 0.8
-            elif wind_speed >= 12:
+            elif wind_speed >= thresholds['moderate']:
                 return 0.6
-            elif wind_speed >= 10:
+            elif wind_speed >= thresholds['weak']:
                 return 0.4
             else:
                 return 0.0
@@ -352,13 +529,14 @@ class MultiCriteriaValidator:
             logger.debug(f"Error validating wind: {str(e)}")
             return 0.5  # Neutral score on error
 
-    def _validate_pressure_gradient(self, candidate: Dict[str, Any], dataset: xr.Dataset) -> float:
+    def _validate_pressure_gradient(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
         """
         Validate pressure gradient criterion.
         
         Args:
             candidate: Candidate dictionary
             dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
             
         Returns:
             Score between 0-1
@@ -417,14 +595,13 @@ class MultiCriteriaValidator:
             gradient_hpa_per_100km = max_gradient * km_per_degree / 100.0
             
             # Score based on pressure gradient (higher gradient = higher score)
-            # Typical Arctic mesocyclones have gradients 0.5-2.0 hPa/100km
-            if gradient_hpa_per_100km >= 1.5:
+            if gradient_hpa_per_100km >= thresholds['very_strong']:
                 return 1.0
-            elif gradient_hpa_per_100km >= 1.0:
+            elif gradient_hpa_per_100km >= thresholds['strong']:
                 return 0.8
-            elif gradient_hpa_per_100km >= 0.7:
+            elif gradient_hpa_per_100km >= thresholds['moderate']:
                 return 0.6
-            elif gradient_hpa_per_100km >= 0.4:
+            elif gradient_hpa_per_100km >= thresholds['weak']:
                 return 0.4
             else:
                 return 0.0
@@ -432,3 +609,95 @@ class MultiCriteriaValidator:
         except Exception as e:
             logger.debug(f"Error validating pressure gradient: {str(e)}")
             return 0.5  # Neutral score on error
+
+    def _validate_wind_850hPa(self, candidate: Dict[str, Any], dataset: xr.Dataset, thresholds: Dict[str, float]) -> float:
+        """
+        Validate wind speed at 850 hPa criterion.
+        
+        Args:
+            candidate: Candidate dictionary
+            dataset: Meteorological dataset
+            thresholds: Threshold values for scoring
+            
+        Returns:
+            Score between 0-1
+        """
+        try:
+            # Check if wind speed at 850 hPa is already calculated in candidate
+            if 'wind_speed_850hPa' in candidate and candidate['wind_speed_850hPa'] is not None:
+                wind_speed = candidate['wind_speed_850hPa']
+            else:
+                # Try to extract wind from dataset at 850 hPa
+                lat, lon = candidate['latitude'], candidate['longitude']
+                
+                # Check for pressure level wind data
+                wind_var_pairs = [
+                    ('u', 'v'),
+                    ('u_component_of_wind', 'v_component_of_wind')
+                ]
+                
+                u_wind_var = None
+                v_wind_var = None
+                
+                for u_var, v_var in wind_var_pairs:
+                    if u_var in dataset and v_var in dataset:
+                        u_wind_var, v_wind_var = u_var, v_var
+                        break
+                
+                if u_wind_var is None or v_wind_var is None:
+                    return 0.5  # Neutral score if wind data unavailable
+                
+                # Look for pressure levels
+                pressure_levels = ['level', 'pressure_level', 'lev', 'plev']
+                pressure_level_dim = None
+                for level_name in pressure_levels:
+                    if level_name in dataset.dims:
+                        pressure_level_dim = level_name
+                        break
+                
+                if pressure_level_dim is None:
+                    # No pressure levels in dataset, use surface wind or return neutral score
+                    return 0.5
+                
+                # Find 850 hPa level or closest available
+                levels = dataset[pressure_level_dim].values
+                closest_level = min(levels, key=lambda x: abs(x - 850))
+                
+                # Get wind components at 850 hPa
+                u_point = float(dataset[u_wind_var].sel(
+                    {pressure_level_dim: closest_level}, 
+                    latitude=lat, 
+                    longitude=lon, 
+                    method='nearest'
+                ).values)
+                v_point = float(dataset[v_wind_var].sel(
+                    {pressure_level_dim: closest_level}, 
+                    latitude=lat, 
+                    longitude=lon, 
+                    method='nearest'
+                ).values)
+                
+                wind_speed = np.sqrt(u_point**2 + v_point**2)
+                
+                # Store for future use
+                candidate['wind_speed_850hPa'] = wind_speed
+                candidate['u_wind_850hPa'] = u_point
+                candidate['v_wind_850hPa'] = v_point
+
+            # Score based on wind speed (higher wind = higher score)
+            if wind_speed >= thresholds['very_strong']:
+                return 1.0
+            elif wind_speed >= thresholds['strong']:
+                return 0.8
+            elif wind_speed >= thresholds['moderate']:
+                return 0.6
+            elif wind_speed >= thresholds['weak']:
+                return 0.4
+            else:
+                return 0.0
+                
+        except Exception as e:
+            logger.debug(f"Error validating wind at 850 hPa: {str(e)}")
+            return 0.5  # Neutral score on error
+
+    

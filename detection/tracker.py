@@ -22,6 +22,7 @@ from core.exceptions import DetectionError, TrackingError
 from models.cyclone import Cyclone, CycloneType, CycloneParameters
 from .criteria import CriteriaManager, BaseCriterion
 from .validators import DetectionValidator
+from .multi_criteria_validator import MultiCriteriaValidator
 from visualization.criteria import plot_laplacian_field, plot_vorticity_field, plot_pressure_field, plot_wind_field, plot_closed_contour_field, plot_combined_criteria
 
 # Инициализация логгера
@@ -52,6 +53,9 @@ class CycloneDetector:
         self.validator = DetectionValidator()
         self.config = config
         self.debug_plot = debug_plot
+        
+        # Initialize MultiCriteriaValidator with config
+        self.multi_criteria_validator = MultiCriteriaValidator(config)
         
         # Если конфигурация предоставлена, устанавливаем активные критерии из конфигурации
         if self.config:
@@ -174,12 +178,42 @@ class CycloneDetector:
             if time_step not in dataset.time.values:
                 raise ValueError(f"Временной шаг {time_step} отсутствует в наборе данных")
         
-        # Применяем маску арктического региона
+        # Применяем маску арктического региона и выбираем текущий временной шаг
         arctic_mask = dataset.latitude >= self.min_latitude
-        arctic_data = dataset.where(arctic_mask, drop=True)
+        # Handle both 'time' and 'valid_time' coordinates
+        if 'time' in dataset.dims:
+            time_data = dataset.sel(time=time_step)
+        elif 'valid_time' in dataset.dims:
+            time_data = dataset.sel(valid_time=time_step)
+        else:
+            # If neither coordinate exists, use the dataset as is
+            time_data = dataset
+        arctic_data = time_data.where(arctic_mask, drop=True)
         
         # Применяем критерии обнаружения
         candidates = self._apply_detection_criteria(arctic_data, time_step)
+        
+        # Apply MultiCriteria validation to filter candidates
+        validated_candidates = []
+        for candidate in candidates:
+            try:
+                is_valid, score, scores = self.multi_criteria_validator.validate_candidate(candidate, arctic_data)
+                if is_valid:
+                    candidate['validation_score'] = score
+                    candidate['individual_scores'] = scores
+                    validated_candidates.append(candidate)
+                    logger.debug(f"Valid candidate at ({candidate['latitude']}, {candidate['longitude']}) with score {score}")
+                else:
+                    logger.debug(f"Filtered candidate at ({candidate['latitude']}, {candidate['longitude']}) with score {score}")
+            except Exception as e:
+                logger.warning(f"Error validating candidate: {str(e)}")
+                # In case of validation error, we'll still include the candidate
+                validated_candidates.append(candidate)
+        
+        candidates = validated_candidates
+        
+        # Apply multi-center Arctic cyclone filtering
+        candidates = self._filter_multi_center_cyclones(candidates, arctic_data)
         
         # --- DEBUG: Print all candidate values before filtering/creation ---
         logger.debug(f"[CycloneDetector.detect] Number of candidates: {len(candidates)}")
@@ -207,11 +241,146 @@ class CycloneDetector:
 
         logger.info(f"Обнаружено {len(cyclones)} циклонов для временного шага {time_step}")
         return cyclones
+
+    def _filter_multi_center_cyclones(self, candidates: List[Dict], dataset: xr.Dataset) -> List[Dict]:
+        """
+        Filter out multi-center systems that are not real Arctic cyclones.
+        
+        Args:
+            candidates: List of candidate cyclones
+            dataset: Meteorological dataset
             
-        # except Exception as e:
-        #     error_msg = f"Ошибка при обнаружении циклонов: {str(e)}"
-        #     logger.error(error_msg)
-        #     raise DetectionError(error_msg)
+        Returns:
+            Filtered list of candidate cyclones
+        """
+        if len(candidates) <= 1:
+            return candidates
+            
+        # Group candidates by proximity
+        filtered_candidates = []
+        used_indices = set()
+        
+        # Calculate distances between all pairs of candidates
+        coords = np.array([[c['latitude'], c['longitude']] for c in candidates])
+        
+        for i, candidate in enumerate(candidates):
+            if i in used_indices:
+                continue
+                
+            # Find nearby candidates
+            nearby_indices = [i]
+            lat1, lon1 = candidate['latitude'], candidate['longitude']
+            
+            for j in range(i + 1, len(candidates)):
+                if j in used_indices:
+                    continue
+                    
+                lat2, lon2 = candidates[j]['latitude'], candidates[j]['longitude']
+                distance = self._calculate_distance(lat1, lon1, lat2, lon2)
+                
+                # If candidates are close (within 200 km), group them
+                if distance <= 200.0:
+                    nearby_indices.append(j)
+                    used_indices.add(j)
+            
+            used_indices.add(i)
+            
+            # If we have multiple centers, apply additional filtering
+            if len(nearby_indices) > 1:
+                # Select the most intense candidate (lowest pressure or highest vorticity)
+                best_candidate = self._select_best_candidate(
+                    [candidates[idx] for idx in nearby_indices], 
+                    dataset
+                )
+                filtered_candidates.append(best_candidate)
+                logger.debug(f"Multi-center system detected, selected best candidate from {len(nearby_indices)} centers")
+            else:
+                # Single center, keep as is
+                filtered_candidates.append(candidate)
+                
+        logger.debug(f"Multi-center filtering: {len(candidates)} -> {len(filtered_candidates)} candidates")
+        return filtered_candidates
+
+    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """
+        Calculate distance between two points in kilometers using haversine formula.
+        
+        Args:
+            lat1, lon1: Latitude and longitude of first point
+            lat2, lon2: Latitude and longitude of second point
+            
+        Returns:
+            Distance in kilometers
+        """
+        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+        return 6371.0 * c  # Earth radius in km
+
+    def _select_best_candidate(self, candidates: List[Dict], dataset: xr.Dataset) -> Dict:
+        """
+        Select the best candidate from a group based on multiple criteria.
+        
+        Args:
+            candidates: List of candidate cyclones
+            dataset: Meteorological dataset
+            
+        Returns:
+            Best candidate based on combined criteria
+        """
+        if len(candidates) == 1:
+            return candidates[0]
+            
+        # Score each candidate based on multiple factors
+        scores = []
+        
+        for candidate in candidates:
+            score = 0.0
+            
+            # Pressure score (lower pressure = higher score)
+            if 'pressure' in candidate:
+                pressure = candidate['pressure']
+                if pressure <= 980:
+                    score += 1.0
+                elif pressure <= 990:
+                    score += 0.8
+                elif pressure <= 1000:
+                    score += 0.6
+                elif pressure <= 1010:
+                    score += 0.4
+                    
+            # Vorticity score (higher vorticity = higher score)
+            if 'vorticity' in candidate:
+                vorticity = abs(candidate['vorticity'])
+                if vorticity >= 5e-5:
+                    score += 1.0
+                elif vorticity >= 3e-5:
+                    score += 0.8
+                elif vorticity >= 1e-5:
+                    score += 0.6
+                elif vorticity >= 5e-6:
+                    score += 0.4
+                    
+            # Wind speed score (higher wind = higher score)
+            if 'wind_speed' in candidate:
+                wind_speed = candidate['wind_speed']
+                if wind_speed >= 20:
+                    score += 1.0
+                elif wind_speed >= 15:
+                    score += 0.8
+                elif wind_speed >= 12:
+                    score += 0.6
+                elif wind_speed >= 10:
+                    score += 0.4
+                    
+            scores.append(score)
+            
+        # Return candidate with highest score
+        best_index = np.argmax(scores)
+        return candidates[best_index]
+            
     
     def _apply_detection_criteria(self, dataset: xr.Dataset, time_step: Any) -> List[Dict]:
         """
@@ -276,96 +445,155 @@ class CycloneDetector:
                     # logger.info(f"Collecting data for combined visualization for {criterion_name}")
                     # Extract data for visualization based on criterion type
                     if criterion_name == 'pressure_laplacian' and hasattr(criterion, 'laplacian_field'):
-                        # Get the actual dimensions used in the criterion
-                        lats = dataset.sel(time=time_step).latitude.values
-                        lons = dataset.sel(time=time_step).longitude.values
-                        
-                        # Filter to Arctic region if needed to match the data dimensions
-                        if hasattr(criterion, 'min_latitude'):
-                            arctic_lats = lats[lats >= criterion.min_latitude]
-                            if len(arctic_lats) != criterion.laplacian_field.shape[0]:
-                                logger.warning(f"Latitude dimension mismatch: {len(arctic_lats)} vs {criterion.laplacian_field.shape[0]}")
-                        
-                        # Store the visualization data ensuring dimensions match
-                        criteria_viz_data['pressure_laplacian'] = {
-                            'laplacian': criterion.laplacian_field,
-                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
-                            'lons': lons,
-                            'threshold': criterion.laplacian_threshold,
-                            'time_step': time_step,
-                            'output_dir': output_dir
-                        }
+                        # Check that the data is not None and has valid shape
+                        if criterion.laplacian_field is not None:
+                            # Get the actual dimensions used in the criterion
+                            # Handle both 'time' and 'valid_time' coordinates
+                            if 'time' in dataset.dims:
+                                time_data = dataset.sel(time=time_step)
+                            elif 'valid_time' in dataset.dims:
+                                time_data = dataset.sel(valid_time=time_step)
+                            else:
+                                time_data = dataset
+                            
+                            lats = time_data.latitude.values
+                            lons = time_data.longitude.values
+                            
+                            # Filter to Arctic region if needed to match the data dimensions
+                            if hasattr(criterion, 'min_latitude'):
+                                arctic_lats = lats[lats >= criterion.min_latitude]
+                                # Check shape compatibility
+                                if hasattr(criterion.laplacian_field, 'shape') and len(criterion.laplacian_field.shape) >= 2:
+                                    if len(arctic_lats) != criterion.laplacian_field.shape[0]:
+                                        logger.warning(f"Latitude dimension mismatch: {len(arctic_lats)} vs {criterion.laplacian_field.shape[0]}")
+                            
+                            # Store the visualization data ensuring dimensions match
+                            criteria_viz_data['pressure_laplacian'] = {
+                                'laplacian': criterion.laplacian_field,
+                                'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                                'lons': lons,
+                                'threshold': criterion.laplacian_threshold,
+                                'time_step': time_step,
+                                'output_dir': output_dir
+                            }
                     elif criterion_name == 'vorticity' and hasattr(criterion, 'vorticity_field'):
-                        # Get the actual dimensions used in the criterion
-                        lats = dataset.sel(time=time_step).latitude.values
-                        lons = dataset.sel(time=time_step).longitude.values
-                        
-                        # Filter to Arctic region if needed to match the data dimensions
-                        if hasattr(criterion, 'min_latitude'):
-                            arctic_lats = lats[lats >= criterion.min_latitude]
-                            if len(arctic_lats) != criterion.vorticity_field.shape[0]:
-                                logger.warning(f"Vorticity latitude dimension mismatch: {len(arctic_lats)} vs {criterion.vorticity_field.shape[0]}")
-                        
-                        # Store the visualization data ensuring dimensions match
-                        criteria_viz_data['vorticity'] = {
-                            'vorticity': criterion.vorticity_field,
-                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
-                            'lons': lons,
-                            'threshold': criterion.vorticity_threshold,
-                            'time_step': time_step,
-                            'output_dir': output_dir
-                        }
-                    elif criterion_name == 'wind_threshold' and hasattr(criterion, 'u_data') and hasattr(criterion, 'v_data'):
-                        # Get the actual dimensions used in the criterion
-                        lats = dataset.sel(time=time_step).latitude.values
-                        lons = dataset.sel(time=time_step).longitude.values
-                        
-                        # Filter to Arctic region if needed to match the data dimensions
-                        if hasattr(criterion, 'min_latitude'):
-                            arctic_lats = lats[lats >= criterion.min_latitude]
-                            if len(arctic_lats) != criterion.u_data.shape[0]:
-                                logger.warning(f"Wind latitude dimension mismatch: {len(arctic_lats)} vs {criterion.u_data.shape[0]}")
-                        
-                        # Store the visualization data ensuring dimensions match
-                        criteria_viz_data['wind_threshold'] = {
-                            'u_wind': criterion.u_data,
-                            'v_wind': criterion.v_data,
-                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
-                            'lons': lons,
-                            'threshold': criterion.min_speed,
-                            'time_step': time_step,
-                            'output_dir': output_dir
-                        }
+                        # Check that the data is not None and has valid shape
+                        if criterion.vorticity_field is not None:
+                            # Get the actual dimensions used in the criterion
+                            # Handle both 'time' and 'valid_time' coordinates
+                            if 'time' in dataset.dims:
+                                time_data = dataset.sel(time=time_step)
+                            elif 'valid_time' in dataset.dims:
+                                time_data = dataset.sel(valid_time=time_step)
+                            else:
+                                time_data = dataset
+                            
+                            lats = time_data.latitude.values
+                            lons = time_data.longitude.values
+                            
+                            # Filter to Arctic region if needed to match the data dimensions
+                            if hasattr(criterion, 'min_latitude'):
+                                arctic_lats = lats[lats >= criterion.min_latitude]
+                                # Check shape compatibility
+                                if hasattr(criterion.vorticity_field, 'shape') and len(criterion.vorticity_field.shape) >= 2:
+                                    if len(arctic_lats) != criterion.vorticity_field.shape[0]:
+                                        logger.warning(f"Vorticity latitude dimension mismatch: {len(arctic_lats)} vs {criterion.vorticity_field.shape[0]}")
+                            
+                            # Store the visualization data ensuring dimensions match
+                            criteria_viz_data['vorticity'] = {
+                                'vorticity': criterion.vorticity_field,
+                                'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                                'lons': lons,
+                                'threshold': criterion.vorticity_threshold,
+                                'time_step': time_step,
+                                'output_dir': output_dir
+                            }
+                    elif criterion_name == 'wind' and hasattr(criterion, 'u_data') and hasattr(criterion, 'v_data'):
+                        # Check that the data is not None and has valid shape
+                        if criterion.u_data is not None and criterion.v_data is not None:
+                            # Get the actual dimensions used in the criterion
+                            # Handle both 'time' and 'valid_time' coordinates
+                            if 'time' in dataset.dims:
+                                time_data = dataset.sel(time=time_step)
+                            elif 'valid_time' in dataset.dims:
+                                time_data = dataset.sel(valid_time=time_step)
+                            else:
+                                time_data = dataset
+                            
+                            lats = time_data.latitude.values
+                            lons = time_data.longitude.values
+                            
+                            # Filter to Arctic region if needed to match the data dimensions
+                            if hasattr(criterion, 'min_latitude'):
+                                arctic_lats = lats[lats >= criterion.min_latitude]
+                                # Check shape compatibility
+                                if hasattr(criterion.u_data, 'shape') and len(criterion.u_data.shape) >= 2:
+                                    if len(arctic_lats) != criterion.u_data.shape[0]:
+                                        logger.warning(f"Wind latitude dimension mismatch: {len(arctic_lats)} vs {criterion.u_data.shape[0]}")
+                            
+                            # Store the visualization data ensuring dimensions match
+                            criteria_viz_data['wind'] = {
+                                'u_wind': criterion.u_data,
+                                'v_wind': criterion.v_data,
+                                'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                                'lons': lons,
+                                'threshold': criterion.min_speed,
+                                'time_step': time_step,
+                                'output_dir': output_dir
+                            }
                     elif criterion_name == 'closed_contour' and hasattr(criterion, 'pressure_field') and hasattr(criterion, 'contour_mask'):
-                        # Get the actual dimensions used in the criterion
-                        lats = dataset.sel(time=time_step).latitude.values
-                        lons = dataset.sel(time=time_step).longitude.values
-                        
-                        # Filter to Arctic region if needed to match the data dimensions
-                        if hasattr(criterion, 'min_latitude'):
-                            arctic_lats = lats[lats >= criterion.min_latitude]
-                            if len(arctic_lats) != criterion.pressure_field.shape[0]:
-                                logger.warning(f"Closed contour latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
-                        
-                        # Store the visualization data ensuring dimensions match
-                        criteria_viz_data['closed_contour'] = {
-                            'pressure': criterion.pressure_field,
-                            'contour_mask': criterion.contour_mask,
-                            'lats': arctic_lats if 'arctic_lats' in locals() else lats,
-                            'lons': lons,
-                            'time_step': time_step,
-                            'output_dir': output_dir
-                        }
+                        # Check that the data is not None and has valid shape
+                        if criterion.pressure_field is not None and criterion.contour_mask is not None:
+                            # Get the actual dimensions used in the criterion
+                            # Handle both 'time' and 'valid_time' coordinates
+                            if 'time' in dataset.dims:
+                                time_data = dataset.sel(time=time_step)
+                            elif 'valid_time' in dataset.dims:
+                                time_data = dataset.sel(valid_time=time_step)
+                            else:
+                                time_data = dataset
+                            
+                            lats = time_data.latitude.values
+                            lons = time_data.longitude.values
+                            
+                            # Filter to Arctic region if needed to match the data dimensions
+                            if hasattr(criterion, 'min_latitude'):
+                                arctic_lats = lats[lats >= criterion.min_latitude]
+                                # Check shape compatibility
+                                if hasattr(criterion.pressure_field, 'shape') and len(criterion.pressure_field.shape) >= 2:
+                                    if len(arctic_lats) != criterion.pressure_field.shape[0]:
+                                        logger.warning(f"Closed contour latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
+                            
+                            # Store the visualization data ensuring dimensions match
+                            criteria_viz_data['closed_contour'] = {
+                                'pressure': criterion.pressure_field,
+                                'contour_mask': criterion.contour_mask,
+                                'lats': arctic_lats if 'arctic_lats' in locals() else lats,
+                                'lons': lons,
+                                'time_step': time_step,
+                                'output_dir': output_dir
+                            }
                     elif criterion_name == 'pressure_minimum' and (hasattr(criterion, 'pressure') or hasattr(criterion, 'pressure_field')):
                         # Collect data for pressure minimum visualization
-                        lats = dataset.sel(time=time_step).latitude.values
-                        lons = dataset.sel(time=time_step).longitude.values
+                        # Handle both 'time' and 'valid_time' coordinates
+                        if 'time' in dataset.dims:
+                            time_data = dataset.sel(time=time_step)
+                        elif 'valid_time' in dataset.dims:
+                            time_data = dataset.sel(valid_time=time_step)
+                        else:
+                            time_data = dataset
+                        
+                        lats = time_data.latitude.values
+                        lons = time_data.longitude.values
                         # Filter to Arctic region for consistency
                         if hasattr(criterion, 'min_latitude'):
                             arctic_lats = lats[lats >= criterion.min_latitude]
                             arctic_lons = lons  # Assuming longitude dimension stays the same
-                            if hasattr(criterion, 'pressure_field') and len(arctic_lats) != criterion.pressure_field.shape[0]:
-                                logger.warning(f"Pressure minimum latitude dimension mismatch: {len(arctic_lats)} vs {criterion.pressure_field.shape[0]}")
+                            # Check shape compatibility
+                            pressure_data = getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None))
+                            if pressure_data is not None and hasattr(pressure_data, 'shape') and len(pressure_data.shape) >= 2:
+                                if len(arctic_lats) != pressure_data.shape[0]:
+                                    logger.warning(f"Pressure minimum latitude dimension mismatch: {len(arctic_lats)} vs {pressure_data.shape[0]}")
                         
                         # Store the visualization data
                         pressure_data = getattr(criterion, 'pressure_field', getattr(criterion, 'pressure', None))
@@ -464,7 +692,14 @@ class CycloneDetector:
                 raise ValueError("Не удается определить переменную давления в наборе данных")
                 
             # Находим ближайшую точку сетки к координатам кандидата
-            time_data = dataset.sel(time=time_step)
+            # Handle both 'time' and 'valid_time' coordinates
+            if 'time' in dataset.dims:
+                time_data = dataset.sel(time=time_step)
+            elif 'valid_time' in dataset.dims:
+                time_data = dataset.sel(valid_time=time_step)
+            else:
+                # If neither coordinate exists, use the dataset as is
+                time_data = dataset
             lat_idx = np.abs(time_data.latitude.values - latitude).argmin()
             lon_idx = np.abs(time_data.longitude.values - longitude).argmin()
             
@@ -478,7 +713,14 @@ class CycloneDetector:
             time_obj = time_step
         
         # Ensure vorticity data is available in the dataset
-        time_data = dataset.sel(time=time_step)
+        # Handle both 'time' and 'valid_time' coordinates
+        if 'time' in dataset.dims:
+            time_data = dataset.sel(time=time_step)
+        elif 'valid_time' in dataset.dims:
+            time_data = dataset.sel(valid_time=time_step)
+        else:
+            # If neither coordinate exists, use the dataset as is
+            time_data = dataset
         
         # Check if vorticity data is missing and try to add it
         vorticity_vars = ['vorticity', 'vo', 'relative_vorticity']
@@ -506,11 +748,9 @@ class CycloneDetector:
             longitude=longitude,
             time=time_obj,
             central_pressure=central_pressure,
-            dataset=time_data
+            dataset=time_data,
+            detector=self
         )
-        
-        # Set detector instance for parameter calculation
-        cyclone.detector = self
         
         # Добавляем дополнительные свойства из кандидата
         for key, value in candidate.items():

@@ -76,7 +76,14 @@ class PressureLaplacianCriterion(BaseCriterion):
         """
         try:
             # Select time step
-            time_data = dataset.sel(time=time_step)
+            # Handle both 'time' and 'valid_time' coordinates
+            if 'time' in dataset.dims:
+                time_data = dataset.sel(time=time_step)
+            elif 'valid_time' in dataset.dims:
+                time_data = dataset.sel(valid_time=time_step)
+            else:
+                # If neither coordinate exists, use the dataset as is
+                time_data = dataset
             
             # Apply mask for Arctic region
             arctic_data = time_data.where(time_data.latitude >= self.min_latitude, drop=True)

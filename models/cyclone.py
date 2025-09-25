@@ -104,8 +104,25 @@ class Cyclone:
             Объект с параметрами циклона.
         """
         try:
+            logger.debug(f"Начинаем расчет параметров циклона для времени {self.time}")
+            logger.debug(f"Доступные переменные в dataset: {list(dataset.variables)}")
+            logger.debug(f"Размеры dataset: {dataset.dims}")
+            
             # Извлекаем регион вокруг циклона
             region = self._extract_cyclone_region(dataset)
+            
+            # Проверяем, что регион не является пустым датасетом
+            if region is None or len(region.data_vars) == 0:
+                logger.warning("Регион пустой, невозможно рассчитать параметры")
+                return CycloneParameters(
+                    central_pressure=self.central_pressure,
+                    vorticity_850hPa=None,
+                    max_wind_speed=None,
+                    radius=None
+                )
+            
+            logger.debug(f"Доступные переменные в регионе: {list(region.variables)}")
+            logger.debug(f"Размеры региона: {region.dims}")
             
             # Словарь для хранения рассчитанных параметров
             calculated_params = {
@@ -115,29 +132,47 @@ class Cyclone:
             # Получаем активные критерии и их параметры
             active_criteria = detector.criteria_manager.get_active_criteria()
             criteria_params = getattr(detector, 'criteria_params', {})
-            
+                       
             # Применяем только зарегистрированные методы на основе активных критериев
-            if 'vorticity' in active_criteria and region is not None:
+            if 'vorticity' in active_criteria:
                 vorticity = self._calculate_max_vorticity(region)
                 calculated_params['vorticity_850hPa'] = vorticity
             
-            if 'wind_threshold' in active_criteria and region is not None:
+            if 'wind' in active_criteria:
                 wind_speed = self._calculate_max_wind_speed(region)
                 calculated_params['max_wind_speed'] = wind_speed
             
-            if 'closed_contour' in active_criteria and region is not None:
+            # Рассчитываем ветер на уровне 850 гПа
+            wind_speed_850, _ = self._calculate_wind_850hPa(region)
+            calculated_params['wind_speed_850hPa'] = wind_speed_850
+            
+            if 'closed_contour' in active_criteria:
                 radius = self._calculate_radius(region)
                 calculated_params['radius'] = radius
             
-            if 'pressure_laplacian' in active_criteria and region is not None:
+            if 'pressure_laplacian' in active_criteria:
                 pressure_gradient = self._calculate_pressure_gradient(region)
                 calculated_params['pressure_gradient'] = pressure_gradient
             
             # Определяем термическую структуру, если доступны необходимые данные
-            if region is not None and any(var in region for var in ['temperature', 't']):
-                thermal_type, t_anomaly = self._determine_thermal_structure(region)
-                calculated_params['thermal_type'] = thermal_type
-                calculated_params['temperature_anomaly'] = t_anomaly
+            if (region is not None and 
+                any(var in region for var in ['temperature', 't']) and
+                'pressure_level' in region.dims):
+                # Проверяем, что давления 500 и 850 гПа доступны
+                available_levels = region.pressure_level.values if 'pressure_level' in region.coords else []
+                required_levels = [500, 850]
+                has_required_levels = all(level in available_levels or 
+                                          any(abs(l - level) <= 25 for l in available_levels) 
+                                          for level in required_levels)
+                
+                if has_required_levels:
+                    thermal_type, t_anomaly = self._determine_thermal_structure(region)
+                    calculated_params['thermal_type'] = thermal_type
+                    calculated_params['temperature_anomaly'] = t_anomaly
+                else:
+                    logger.debug(f"Недостаточно уровней давления для анализа термической структуры. Доступные: {available_levels}")
+            else:
+                logger.debug(f"Нет данных о температуре или уровней давления для анализа термической структуры. dims: {list(region.dims) if region is not None else 'None'}")
             
             # Создаем объект параметров с рассчитанными значениями
             parameters = CycloneParameters(**calculated_params)
@@ -183,32 +218,80 @@ class Cyclone:
         lon_min = self.longitude - radius_degrees
         lon_max = self.longitude + radius_degrees
         
-        # Нормализуем долготу
-        if lon_min < -180:
+        # Нормализуем долготу к диапазону [-180, 180]
+        while lon_min < -180:
             lon_min += 360
-        if lon_max > 180:
+        while lon_max > 180:
             lon_max -= 360
         
         # Извлекаем регион
         try:
-            # Проверяем измерение времени
+            # Check if latitude coordinates are in decreasing order (like in ERA5 data: 90 to 65)
+            if 'latitude' in dataset.coords:
+                lat_coords = dataset.latitude.values
+                is_lat_decreasing = len(lat_coords) > 1 and lat_coords[0] > lat_coords[1]
+                
+                # Adjust latitude slicing based on coordinate order
+                if is_lat_decreasing:
+                    # For decreasing latitudes, we need lat_max first, lat_min second
+                    lat_slice = slice(lat_max, lat_min)
+                else:
+                    # For increasing latitudes, use the standard approach
+                    lat_slice = slice(lat_min, lat_max)
+            else:
+                # If no latitude coordinate, use default approach
+                lat_slice = slice(lat_min, lat_max)
+            
+            # Check longitude coordinate order
+            if 'longitude' in dataset.coords:
+                lon_coords = dataset.longitude.values
+                is_lon_decreasing = len(lon_coords) > 1 and lon_coords[0] > lon_coords[1]
+                
+                if is_lon_decreasing:
+                    # For decreasing longitudes, lon_max first, lon_min second
+                    lon_slice = slice(lon_max, lon_min)
+                else:
+                    # For increasing longitudes (most common), lon_min first, lon_max second
+                    lon_slice = slice(lon_min, lon_max)
+            else:
+                # Default to normal longitude order
+                lon_slice = slice(lon_min, lon_max)
+            
+            # Apply the selection
             if 'time' in dataset.dims:
                 # Находим ближайший временной шаг
                 time = dataset.sel(time=self.time, method='nearest').time.values
                 
                 # Извлекаем данные для региона и времени
                 region = dataset.sel(
-                    latitude=slice(lat_min, lat_max),
-                    longitude=slice(lon_min, lon_max),
+                    latitude=lat_slice,
+                    longitude=lon_slice,
                     time=time
                 )
             else:
                 # Извлекаем данные только для региона
                 region = dataset.sel(
-                    latitude=slice(lat_min, lat_max),
-                    longitude=slice(lon_min, lon_max)
+                    latitude=lat_slice,
+                    longitude=lon_slice
                 )
             
+            # Проверяем, что регион содержит необходимые данные
+            if region.sizes.get('latitude', 0) == 0 or region.sizes.get('longitude', 0) == 0:
+                logger.warning(f"Регион пустой: lat=[{lat_min}, {lat_max}], lon=[{lon_min}, {lon_max}], центр=({self.latitude}, {self.longitude})")
+                # Try to return a minimal region with at least the center point
+                try:
+                    # Select nearest points for each coordinate
+                    region = dataset.sel(
+                        latitude=self.latitude,
+                        longitude=self.longitude,
+                        time=self.time if 'time' in dataset.dims else None,
+                        method='nearest'
+                    )
+                    logger.info("Successfully selected nearest point to center instead of empty region")
+                except Exception:
+                    logger.warning("Could not select nearest point either, returning original dataset")
+                    return dataset  # Возвращаем исходный датасет, если регион пустой
+                
             return region
             
         except Exception as e:
@@ -244,10 +327,16 @@ class Cyclone:
             
             if vorticity_var is None:
                 logger.warning("No vorticity variable found in region dataset")
+                logger.debug(f"Available variables: {list(region.variables)}")
+                return None
+            
+            # Проверяем, что переменная содержит данные
+            if region[vorticity_var].size == 0:
+                logger.warning(f"Variable {vorticity_var} has empty values in region")
                 return None
             
             # Если переменная завихренности есть, используем ее
-            if 'level' in region.dims and vorticity_var in region:
+            if 'level' in region.dims:
                 # Ищем уровень 850 гПа или ближайший
                 levels = region.level.values
                 level_850 = min(levels, key=lambda x: abs(x - 850))
@@ -270,6 +359,9 @@ class Cyclone:
             max_vorticity = float(np.nanmax(vorticity.values))
             return max_vorticity
             
+        except KeyError as e:
+            logger.warning(f"Variable not found in region: {str(e)}")
+            return None
         except Exception as e:
             logger.warning(f"Error calculating max vorticity: {str(e)}")
             import traceback
@@ -288,12 +380,28 @@ class Cyclone:
         """
         try:
             # Проверяем наличие компонентов ветра
-            if ('u' in region or 'u_component_of_wind' in region) and \
-               ('v' in region or 'v_component_of_wind' in region):
-                
-                # Получаем компоненты ветра
-                u_var = 'u' if 'u' in region else 'u_component_of_wind'
-                v_var = 'v' if 'v' in region else 'v_component_of_wind'
+            u_vars = ['u', 'u_component_of_wind']
+            v_vars = ['v', 'v_component_of_wind']
+            
+            u_var = None
+            v_var = None
+            
+            # Ищем доступные переменные
+            for var in u_vars:
+                if var in region:
+                    u_var = var
+                    break
+                    
+            for var in v_vars:
+                if var in region:
+                    v_var = var
+                    break
+                    
+            if u_var is not None and v_var is not None:
+                # Проверяем, что переменные содержат данные
+                if region[u_var].size == 0 or region[v_var].size == 0:
+                    logger.warning("Wind component variables exist but have empty values in region")
+                    return None
                 
                 # Проверяем наличие уровней давления
                 if 'level' in region.dims:
@@ -337,6 +445,11 @@ class Cyclone:
             wind_vars = ['wind_speed', 'wspd']
             for var in wind_vars:
                 if var in region:
+                    # Проверяем, что переменная содержит данные
+                    if region[var].size == 0:
+                        logger.warning(f"Variable {var} exists but has empty values in region")
+                        continue
+                        
                     wind_speed = region[var]
                     
                     # Проверяем наличие уровней давления
@@ -362,8 +475,13 @@ class Cyclone:
                     return max_wind
             
             # Если не нашли данные о ветре
+            logger.warning("No wind data available in region dataset")
+            logger.debug(f"Available variables: {list(region.variables)}")
             return None
             
+        except KeyError as e:
+            logger.warning(f"Wind variable not found in region: {str(e)}")
+            return None
         except Exception as e:
             logger.warning(f"Error calculating max wind speed: {str(e)}")
             return None
@@ -390,6 +508,12 @@ class Cyclone:
             
             if pressure_var is None:
                 logger.warning("No pressure variable found in region dataset")
+                logger.debug(f"Available variables: {list(region.variables)}")
+                return None
+            
+            # Проверяем, что переменная содержит данные
+            if region[pressure_var].size == 0:
+                logger.warning(f"Variable {pressure_var} has empty values in region")
                 return None
             
             # Получаем поле давления
@@ -447,6 +571,9 @@ class Cyclone:
             
             return max_radius if max_radius > 0 else None
             
+        except KeyError as e:
+            logger.warning(f"Pressure variable not found in region: {str(e)}")
+            return None
         except Exception as e:
             logger.warning(f"Error calculating cyclone radius: {str(e)}")
             import traceback
@@ -493,63 +620,239 @@ class Cyclone:
                 break
         
         if temp_var is None:
+            logger.debug("No temperature variable found in region dataset")
+            logger.debug(f"Available variables: {list(region.variables)}")
+            return CycloneType.UNCLASSIFIED, None
+        
+        # Проверяем, что переменная содержит данные
+        if region[temp_var].size == 0:
+            logger.warning(f"Variable {temp_var} has empty values in region")
             return CycloneType.UNCLASSIFIED, None
         
         # Проверяем наличие уровней давления
-        if 'level' not in region.dims:
+        # Different datasets may use different names for the pressure level dimension
+        pressure_level_dim = None
+        if 'pressure_level' in region.dims:
+            pressure_level_dim = 'pressure_level'
+        elif 'level' in region.dims:
+            pressure_level_dim = 'level'
+        elif 'isobaric' in region.dims:
+            pressure_level_dim = 'isobaric'
+        
+        if pressure_level_dim is None:
+            logger.warning("No pressure level dimension found in region")
             return CycloneType.UNCLASSIFIED, None
         
         # Проверяем наличие необходимых уровней
         required_levels = [500, 850]
-        available_levels = region.level.values
+        available_levels = region[pressure_level_dim].values
         
         for level in required_levels:
             if level not in available_levels and not any(abs(l - level) <= 25 for l in available_levels):
+                logger.debug(f"Required level {level} hPa not found in available levels: {available_levels}")
                 return CycloneType.UNCLASSIFIED, None
         
-        # Находим ближайшие уровни к требуемым
-        level_500 = min(available_levels, key=lambda x: abs(x - 500))
-        level_850 = min(available_levels, key=lambda x: abs(x - 850))
-        
-        # Получаем температуру на уровнях
-        t_500 = region[temp_var].sel(level=level_500)
-        t_850 = region[temp_var].sel(level=level_850)
-        
-        # Рассчитываем зональные средние
-        t_500_zonal_mean = t_500.mean(dim='longitude')
-        t_850_zonal_mean = t_850.mean(dim='longitude')
-        
-        # Рассчитываем аномалии в центре циклона
-        center_lat = self.latitude
-        center_lon = self.longitude
-        
-        # Находим ближайшие точки сетки к центру
-        t_500_center = float(t_500.sel(latitude=center_lat, longitude=center_lon, method='nearest').values)
-        t_850_center = float(t_850.sel(latitude=center_lat, longitude=center_lon, method='nearest').values)
-        
-        # Находим зональные средние для широты центра
-        center_lat_idx = abs(region.latitude - center_lat).argmin()
-        t_500_zonal_at_center = float(t_500_zonal_mean.isel(latitude=center_lat_idx).values)
-        t_850_zonal_at_center = float(t_850_zonal_mean.isel(latitude=center_lat_idx).values)
-        
-        # Рассчитываем аномалии
-        t_500_anomaly = t_500_center - t_500_zonal_at_center
-        t_850_anomaly = t_850_center - t_850_zonal_at_center
-        
-        # Определяем тип термической структуры
-        if t_500_anomaly > 0 and t_850_anomaly > 0:
-            # Теплый центр во всей толще
-            return CycloneType.WARM_CORE, t_850_anomaly
-        elif t_500_anomaly < 0 and t_850_anomaly < 0:
-            # Холодный центр во всей толще
-            return CycloneType.COLD_CORE, t_850_anomaly
-        elif t_500_anomaly < 0 and t_850_anomaly > 0:
-            # Холодный верх, теплый низ (типично для мезоциклонов)
-            return CycloneType.HYBRID, t_850_anomaly
-        else:
-            # Теплый верх, холодный низ (нетипично)
-            return CycloneType.UNCLASSIFIED, t_850_anomaly
+        try:
+            # Находим ближайшие уровни к требуемым
+            level_500 = min(available_levels, key=lambda x: abs(x - 500))
+            level_850 = min(available_levels, key=lambda x: abs(x - 850))
+            
+            # Получаем температуру на уровнях
+            t_500 = region[temp_var].sel({pressure_level_dim: level_500})
+            t_850 = region[temp_var].sel({pressure_level_dim: level_850})
+            
+            # Проверяем, что данные не пустые
+            if t_500.size == 0 or t_850.size == 0:
+                logger.warning("Temperature data arrays are empty")
+                return CycloneType.UNCLASSIFIED, None
+            
+            # Рассчитываем зональные средние
+            t_500_zonal_mean = t_500.mean(dim='longitude')
+            t_850_zonal_mean = t_850.mean(dim='longitude')
+            
+            # Рассчитываем аномалии в центре циклона
+            center_lat = self.latitude
+            center_lon = self.longitude
+            
+            # Находим ближайшие точки сетки к центру
+            t_500_center_data = t_500.sel(latitude=center_lat, longitude=center_lon, method='nearest')
+            t_850_center_data = t_850.sel(latitude=center_lat, longitude=center_lon, method='nearest')
+            
+            # Проверяем, что данные не пустые
+            if t_500_center_data.size == 0 or t_850_center_data.size == 0:
+                logger.warning("Temperature data at center is empty")
+                return CycloneType.UNCLASSIFIED, None
+            
+            t_500_center = float(t_500_center_data.values)
+            t_850_center = float(t_850_center_data.values)
+            
+            # Проверяем, что значения не NaN
+            if np.isnan(t_500_center) or np.isnan(t_850_center):
+                logger.warning(f"NaN values found in temperature data: t_500_center={t_500_center}, t_850_center={t_850_center}")
+                return CycloneType.UNCLASSIFIED, None
+            
+            # Находим зональные средние для широты центра
+            center_lat_idx = abs(region.latitude - center_lat).argmin()
+            t_500_zonal_at_center = float(t_500_zonal_mean.isel(latitude=center_lat_idx).values)
+            t_850_zonal_at_center = float(t_850_zonal_mean.isel(latitude=center_lat_idx).values)
+            
+            # Проверяем, что значения не NaN
+            if np.isnan(t_500_zonal_at_center) or np.isnan(t_850_zonal_at_center):
+                logger.warning(f"NaN values in zonal means: t_500_zonal_at_center={t_500_zonal_at_center}, t_850_zonal_at_center={t_850_zonal_at_center}")
+                return CycloneType.UNCLASSIFIED, None
+            
+            # Рассчитываем аномалии
+            t_500_anomaly = t_500_center - t_500_zonal_at_center
+            t_850_anomaly = t_850_center - t_850_zonal_at_center
+            
+            # Определяем тип термической структуры
+            if t_500_anomaly > 0 and t_850_anomaly > 0:
+                # Теплый центр во всей толще
+                return CycloneType.WARM_CORE, t_850_anomaly
+            elif t_500_anomaly < 0 and t_850_anomaly < 0:
+                # Холодный центр во всей толще
+                return CycloneType.COLD_CORE, t_850_anomaly
+            elif t_500_anomaly < 0 and t_850_anomaly > 0:
+                # Холодный верх, теплый низ (типично для мезоциклонов)
+                return CycloneType.HYBRID, t_850_anomaly
+            else:
+                # Теплый верх, холодный низ (нетипично)
+                return CycloneType.UNCLASSIFIED, t_850_anomaly
+        except KeyError as e:
+            logger.warning(f"Temperature variable not found in region: {str(e)}")
+            return CycloneType.UNCLASSIFIED, None
+        except Exception as e:
+            logger.warning(f"Error determining thermal structure: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
+            return CycloneType.UNCLASSIFIED, None
     
+    def _calculate_wind_850hPa(self, region: xr.Dataset) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Рассчитывает скорость ветра на уровне 850 гПа в центре циклона.
+        Направление ветра теперь не используется и возвращается как None.
+        
+        Аргументы:
+            region: Набор метеорологических данных для региона циклона.
+            
+        Возвращает:
+            Кортеж (скорость ветра в м/с, None) или (None, None), 
+            если расчет невозможен.
+        """
+        try:
+            # Проверяем наличие компонентов ветра
+            u_vars = ['u', 'u_component_of_wind', 'u_wind']
+            v_vars = ['v', 'v_component_of_wind', 'v_wind']
+            
+            u_var = None
+            v_var = None
+            
+            # Ищем доступные переменные
+            for var in u_vars:
+                if var in region:
+                    u_var = var
+                    break
+                    
+            for var in v_vars:
+                if var in region:
+                    v_var = var
+                    break
+                    
+            if u_var is None or v_var is None:
+                logger.warning("Компоненты ветра не найдены в наборе данных")
+                logger.debug(f"Доступные переменные: {list(region.variables)}")
+                return None, None
+            
+            # Проверяем, что переменные содержат данные
+            if region[u_var].size == 0 or region[v_var].size == 0:
+                logger.warning("Переменные компонентов ветра пусты")
+                return None, None
+            
+            # Проверяем наличие уровней давления
+            pressure_level_names = ['level', 'pressure_level', 'lev', 'plev']
+            pressure_level_dim = None
+            
+            for level_name in pressure_level_names:
+                if level_name in region.dims:
+                    pressure_level_dim = level_name
+                    break
+            
+            u_at_850 = None
+            v_at_850 = None
+            
+            if pressure_level_dim is not None:
+                # Ищем уровень 850 гПа или ближайший
+                available_levels = region[pressure_level_dim].values
+                level_850 = min(available_levels, key=lambda x: abs(x - 850))
+                
+                logger.debug(f"Используем уровень {level_850} гПа (ближайший к 850) для расчета ветра")
+                
+                u_at_850 = region[u_var].sel({pressure_level_dim: level_850})
+                v_at_850 = region[v_var].sel({pressure_level_dim: level_850})
+            else:
+                # Если уровней давления нет, используем данные как есть
+                u_at_850 = region[u_var]
+                v_at_850 = region[v_var]
+            
+            # Проверяем, что массивы не пустые
+            if u_at_850.size == 0 or v_at_850.size == 0:
+                logger.warning("Массивы компонентов ветра пусты")
+                return None, None
+
+            # Проверяем наличие NaN значений
+            if np.isnan(u_at_850).all() or np.isnan(v_at_850).all():
+                logger.warning("Все значения компонентов ветра равны NaN")
+                return None, None
+
+            # Получаем значения для центральной точки (около циклона)
+            # Находим ближайшую точку сетки к центру циклона
+            u_center_data = u_at_850.sel(
+                latitude=self.latitude, 
+                longitude=self.longitude, 
+                method='nearest'
+            )
+            v_center_data = v_at_850.sel(
+                latitude=self.latitude, 
+                longitude=self.longitude, 
+                method='nearest'
+            )
+            
+            # Проверяем, что данные не пустые
+            if u_center_data.size == 0 or v_center_data.size == 0:
+                logger.warning("Данные ветра в центре циклона отсутствуют")
+                return None, None
+                
+            u_value = float(u_center_data.values)
+            v_value = float(v_center_data.values)
+            
+            # Проверяем, что значения не NaN
+            if np.isnan(u_value) or np.isnan(v_value):
+                logger.warning(f"Найдены NaN значения: u={u_value}, v={v_value}")
+                return None, None
+            
+            # Рассчитываем скорость ветра
+            wind_speed = np.sqrt(u_value**2 + v_value**2)
+            
+            # Рассчитываем направление ветра (в градусах от севера по часовой стрелке)
+            # atan2 возвращает угол в радианах, преобразуем в градусы
+            wind_direction = np.arctan2(u_value, v_value) * 180.0 / np.pi
+            # Приводим к диапазону [0, 360)
+            wind_direction = (wind_direction + 360.0) % 360.0
+            
+            logger.debug(f"Рассчитана скорость ветра на 850 гПа: скорость={wind_speed:.2f}")
+            
+            # Возвращаем скорость ветра и None для направления, т.к. оно больше не используется
+            return float(wind_speed), None
+            
+        except KeyError as e:
+            logger.warning(f"Переменная ветра не найдена в регионе: {str(e)}")
+            return None, None
+        except Exception as e:
+            logger.warning(f"Ошибка при расчете ветра на 850 гПа: {str(e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
+            return None, None
+
     def _calculate_pressure_gradient(self, region: xr.Dataset) -> Optional[float]:
         """
         Рассчитывает максимальный градиент давления вблизи центра циклона.
@@ -572,6 +875,12 @@ class Cyclone:
             
             if pressure_var is None:
                 logger.warning("No pressure variable found in region dataset")
+                logger.debug(f"Available variables: {list(region.variables)}")
+                return None
+            
+            # Проверяем, что переменная содержит данные
+            if region[pressure_var].size == 0:
+                logger.warning(f"Variable {pressure_var} has empty values in region")
                 return None
             
             # Получаем поле давления
@@ -652,6 +961,9 @@ class Cyclone:
                 logger.warning(f"Error converting gradient to hPa/100km: {str(e)}")
                 return None
                 
+        except KeyError as e:
+            logger.warning(f"Pressure variable not found in region: {str(e)}")
+            return None
         except Exception as e:
             logger.warning(f"Error calculating pressure gradient: {str(e)}")
             import traceback
@@ -896,6 +1208,8 @@ class Cyclone:
             parameters.update({
                 'vorticity_850hPa': getattr(self.parameters, 'vorticity_850hPa', None),
                 'max_wind_speed': getattr(self.parameters, 'max_wind_speed', None),
+                'wind_speed_850hPa': getattr(self.parameters, 'wind_speed_850hPa', None),
+                'wind_direction_850hPa': getattr(self.parameters, 'wind_direction_850hPa', None),
                 'radius_km': getattr(self.parameters, 'radius', None),
                 'thermal_type': getattr(self.parameters, 'thermal_type', CycloneType.UNCLASSIFIED).value,
                 'temperature_anomaly': getattr(self.parameters, 'temperature_anomaly', None),

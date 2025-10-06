@@ -18,6 +18,7 @@ import logging
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from core.config import ConfigManager
 from core.logging_setup import setup_logging
@@ -28,28 +29,101 @@ from export.formats.csv_exporter import CycloneCSVExporter
 from visualization.tracks import plot_cyclone_tracks
 from visualization.heatmaps import create_cyclone_frequency_map
 from visualization.parameters import plot_cyclone_parameters
+from models.cyclone import Cyclone
+
+
+import pandas as pd
+from models.cyclone import Cyclone
 
 
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Arctic Mesocyclone Detection and Analysis')
     
-    parser.add_argument('--config', type=str, default='config.yaml',
-                        help='Path to configuration file')
-    parser.add_argument('--start-date', type=str, required=True,
-                        help='Start date in YYYY-MM-DD format')
-    parser.add_argument('--end-date', type=str, required=True,
-                        help='End date in YYYY-MM-DD format')
-    parser.add_argument('--output-dir', type=str, default='output',
-                        help='Directory for output files')
+    # Arguments for the main workflow
+    workflow_group = parser.add_argument_group('Workflow Arguments')
+    workflow_group.add_argument('--config', type=str, default='config.yaml',
+                                help='Path to configuration file')
+    workflow_group.add_argument('--start-date', type=str,
+                                help='Start date in YYYY-MM-DD format')
+    workflow_group.add_argument('--end-date', type=str,
+                                help='End date in YYYY-MM-DD format')
+    workflow_group.add_argument('--output-dir', type=str, default='output',
+                                help='Directory for output files')
+    
+    # Argument for visualization from CSV
+    parser.add_argument('--visualize-csv', type=str,
+                        help='Path to a cyclone_tracks.csv file to visualize')
+    
+    # General arguments
     parser.add_argument('--log-level', type=str, default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging level')
     parser.add_argument('--debug-tracking', action='store_true',
-                       help='Enable debug mode for tracking (save CSV files)')
+                        help='Enable debug mode for tracking (save CSV files)')
     parser.add_argument('--debug-plot', action='store_true',
                         help='Enable debug mode for plotting (save images)')
-    return parser.parse_args()
+    
+    args = parser.parse_args()
+    
+    # Conditional requirement for start-date and end-date
+    if args.visualize_csv is None and (args.start_date is None or args.end_date is None):
+        parser.error("--start-date and --end-date are required unless --visualize-csv is specified.")
+        
+    return args
+
+
+def visualize_from_csv(csv_path: str, output_dir: str):
+    """
+    Visualizes cyclone tracks from a CSV file.
+    
+    Args:
+        csv_path: Path to the cyclone_tracks.csv file.
+        output_dir: Directory to save the output plot.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"Visualizing cyclone tracks from {csv_path}")
+    
+    try:
+        df = pd.read_csv(csv_path)
+        
+        # Reconstruct tracks
+        tracks = []
+        for track_id in df['track_id'].unique():
+            track_df = df[df['track_id'] == track_id]
+            track = []
+            for _, row in track_df.iterrows():
+                cyclone = Cyclone(
+                    latitude=row['latitude'],
+                    longitude=row['longitude'],
+                    time=pd.to_datetime(row['time']),
+                    central_pressure=row['central_pressure']
+                )
+                cyclone.track_id = track_id
+                track.append(cyclone)
+            tracks.append(track)
+            
+        logger.info(f"Reconstructed {len(tracks)} tracks from CSV file.")
+        
+        # Ensure output directory exists
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Plot cyclone tracks
+        tracks_file = output_dir / "cyclone_tracks_from_csv.png"
+        plot_cyclone_tracks(tracks, output_file=tracks_file)
+        logger.info(f"Saved visualized tracks to {tracks_file}")
+        
+        return {"status": "success", "output_file": str(tracks_file)}
+        
+    except FileNotFoundError:
+        logger.error(f"CSV file not found at {csv_path}")
+        return {"status": "error", "message": "CSV file not found"}
+    except Exception as e:
+        logger.error(f"An error occurred during visualization from CSV: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 
 
 def run_workflow(start_date, end_date, config_path='config.yaml', 
@@ -74,10 +148,6 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
         start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     if isinstance(end_date, str):
         end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d')
-    
-    # Setup logging
-    setup_logging(log_level=log_level, 
-                 log_file=os.path.join(output_dir, 'arctic_cyclone.log'))
     
     logger = logging.getLogger(__name__)
     logger.info("Starting Arctic Mesocyclone detection workflow")
@@ -357,21 +427,34 @@ def run_workflow(start_date, end_date, config_path='config.yaml',
 def main():
     """Main entry point when run as script."""
     args = parse_arguments()
-    result = run_workflow(
-        start_date=args.start_date,
-        end_date=args.end_date,
-        config_path=args.config,
-        output_dir=args.output_dir,
-        log_level=args.log_level,
-        debug_tracking=args.debug_tracking,
-        debug_plot=args.debug_plot
-    )
     
-    if result["status"] == "success":
-        print(f"Successfully detected {result['tracks_count']} cyclone tracks")
-        print(f"Results saved to {args.output_dir}")
+    # Setup logging
+    setup_logging(log_level=args.log_level, 
+                 log_file=os.path.join(args.output_dir, 'arctic_cyclone.log'))
+    
+    if args.visualize_csv:
+        result = visualize_from_csv(args.visualize_csv, args.output_dir)
+        if result["status"] == "success":
+            print(f"Successfully visualized tracks from {args.visualize_csv}")
+            print(f"Plot saved to {result['output_file']}")
+        else:
+            print(f"Visualization failed: {result['message']}")
     else:
-        print(f"Workflow failed: {result['message']}")
+        result = run_workflow(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            config_path=args.config,
+            output_dir=args.output_dir,
+            log_level=args.log_level,
+            debug_tracking=args.debug_tracking,
+            debug_plot=args.debug_plot
+        )
+        
+        if result["status"] == "success":
+            print(f"Successfully detected {result['tracks_count']} cyclone tracks")
+            print(f"Results saved to {args.output_dir}")
+        else:
+            print(f"Workflow failed: {result['message']}")
 
 
 if __name__ == "__main__":

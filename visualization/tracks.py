@@ -264,13 +264,18 @@ def plot_cyclone_track(cyclone_track: List[Cyclone],
         # Добавляем информацию о треке
         if hasattr(cyclones_sorted[0], 'track_id') and cyclones_sorted[0].track_id:
             track_id = cyclones_sorted[0].track_id
+            # Use only the last 3 characters of track_id
+            if len(track_id) >= 3:
+                display_track_id = track_id[-3:]  # Get last 3 characters
+            else:
+                display_track_id = track_id  # Use the whole ID if less than 3 chars
             start_time = cyclones_sorted[0].time.strftime('%Y-%m-%d %H:%M')
             end_time = cyclones_sorted[-1].time.strftime('%Y-%m-%d %H:%M')
             duration = (cyclones_sorted[-1].time - cyclones_sorted[0].time).total_seconds() / 3600
             
             # Размещаем информацию в левом верхнем углу карты
             track_info = (
-                f"Трек: {track_id}\n"
+                f"Трек: {display_track_id}\n"
                 f"Начало: {start_time}\n"
                 f"Конец: {end_time}\n"
                 f"Длительность: {duration:.1f} ч"
@@ -577,7 +582,13 @@ def animate_cyclone_track(cyclone_track: List[Cyclone],
         
         # Устанавливаем заголовок
         if hasattr(cyclones_sorted[0], 'track_id') and cyclones_sorted[0].track_id:
-            ax.set_title(f'Анимация движения циклона (ID: {cyclones_sorted[0].track_id})', fontsize=14)
+            track_id = cyclones_sorted[0].track_id
+            # Use only the last 3 characters of track_id
+            if len(track_id) >= 3:
+                display_track_id = track_id[-3:]  # Get last 3 characters
+            else:
+                display_track_id = track_id  # Use the whole ID if less than 3 chars
+            ax.set_title(f'Анимация движения циклона (ID: {display_track_id})', fontsize=14)
         else:
             ax.set_title('Анимация движения циклона', fontsize=14)
         
@@ -779,12 +790,17 @@ def plot_track_parameters(cyclone_track: List[Cyclone],
         # Устанавливаем общий заголовок
         if hasattr(cyclones_sorted[0], 'track_id') and cyclones_sorted[0].track_id:
             track_id = cyclones_sorted[0].track_id
+            # Use only the last 3 characters of track_id
+            if len(track_id) >= 3:
+                display_track_id = track_id[-3:]  # Get last 3 characters
+            else:
+                display_track_id = track_id  # Use the whole ID if less than 3 chars
             start_time = cyclones_sorted[0].time.strftime('%Y-%m-%d %H:%M')
             end_time = cyclones_sorted[-1].time.strftime('%Y-%m-%d %H:%M')
             duration = time_hours[-1]
             
             fig.suptitle(
-                f"Параметры циклона (ID: {track_id})\n"
+                f"Параметры циклона (ID: {display_track_id})\n"
                 f"Период: {start_time} - {end_time} ({duration:.1f} ч)",
                 fontsize=14
             )
@@ -998,12 +1014,17 @@ def plot_cyclone_tracks(tracks: List[List[Cyclone]],
                 # Add track ID label at starting point
                 if hasattr(track_sorted[0], 'track_id') and track_sorted[0].track_id:
                     track_id = track_sorted[0].track_id
+                    # Use only the last 3 characters of track_id with the track number
+                    if len(track_id) >= 3:
+                        display_id = track_id[-3:]  # Get last 3 characters
+                    else:
+                        display_id = track_id  # Use the whole ID if less than 3 chars
                 else:
-                    track_id = f"Track {i+1}"
+                    display_id = f"{i+1}"  # Use only the track number
                 
-                # ax.text(lons[0], lats[0], track_id, transform=ccrs.PlateCarree(),
-                #        fontsize=7, ha='right', va='bottom', bbox=dict(
-                #            boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.7))
+                ax.text(lons[0], lats[0], display_id, transform=ccrs.PlateCarree(),
+                        fontsize=8, ha='left', va='center', color='black', alpha=0.7,  # Make number notion transparent with alpha
+                        path_effects=[patheffects.withStroke(linewidth=2, foreground='white')])
             else:
                 # Use a predefined set of colors
                 colors_list = plt.cm.tab10.colors
@@ -1204,8 +1225,13 @@ def plot_track_evolution(track: List[Cyclone],
     
     # Add track information in the figure title
     track_id = getattr(track_sorted[0], 'track_id', 'Unknown')
+    # Use only the last 3 characters of track_id
+    if track_id != 'Unknown' and len(track_id) >= 3:
+        display_track_id = track_id[-3:]  # Get last 3 characters
+    else:
+        display_track_id = track_id  # Use the whole ID if less than 3 chars or 'Unknown'
     duration_hours = (track_sorted[-1].time - track_sorted[0].time).total_seconds() / 3600
-    plt.suptitle(f"Track ID: {track_id}, Duration: {duration_hours:.1f} hours, Points: {len(track)}")
+    plt.suptitle(f"Track ID: {display_track_id}, Duration: {duration_hours:.1f} hours, Points: {len(track)}")
     
     plt.tight_layout()
     plt.subplots_adjust(top=0.92)
